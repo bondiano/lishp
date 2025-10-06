@@ -1,4 +1,5 @@
 use colored::*;
+use lishp::parser;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
 use rustyline::history::History;
@@ -136,7 +137,20 @@ impl ReplSession {
     );
   }
 
+  fn load_file(&self, file: &str) -> Result<CommandResult, String> {
+    let mut file = std::fs::File::open(file).map_err(|e| format!("Failed to open file: {}", e))?;
+    let mut contents = String::new();
+    std::io::Read::read_to_string(&mut file, &mut contents)
+      .map_err(|e| format!("Failed to read file: {}", e))?;
+    Ok(CommandResult::Continue)
+  }
+
   fn handle_command(&mut self, line: &str) -> CommandResult {
+    if line.starts_with(":l") || line.starts_with(":load") {
+      let file = line.split_whitespace().nth(1).unwrap_or("");
+      return self.load_file(file).expect("Failed to load file");
+    }
+
     match line.trim() {
       ":quit" | ":exit" => CommandResult::Exit,
       ":help" => {
@@ -190,91 +204,35 @@ impl ReplSession {
   }
 
   fn print_help(&self) {
-    let title_style = |text: &str| text.bright_cyan().bold();
-    let section_style = |text: &str| text.bright_yellow().bold();
-    let command_style = |text: &str| text.bright_green();
-    let key_style = |text: &str| text.bright_magenta();
-    let desc_style = |text: &str| text.bright_white();
-    let separator = "━".repeat(64).bright_black().to_string();
+    let separator = "━".repeat(50).bright_black().to_string();
 
     println!("\n{}", separator);
-    println!(
-      "  {}",
-      title_style("Lishp REPL - Interactive Lisp Environment")
-    );
+    println!("  {}", "Lishp REPL".bright_cyan().bold());
     println!("{}", separator);
 
-    println!("\n{}", section_style("  📚 Commands"));
-    self.print_help_item(
-      &command_style(":help"),
-      &desc_style("Show this help message"),
-    );
-    self.print_help_item(&command_style(":quit"), &desc_style("Exit the REPL"));
-    self.print_help_item(&command_style(":exit"), &desc_style("Exit the REPL"));
-    self.print_help_item(
-      &command_style(":history"),
-      &desc_style("Show command history"),
-    );
+    println!("\n  {}", "Commands".bright_yellow().bold());
+    println!("    {:12} {}", ":help".bright_green(), "Show this help");
+    println!("    {:12} {}", ":quit".bright_green(), "Exit the REPL");
+    println!("    {:12} {}", ":history".bright_green(), "Show history");
 
-    println!("\n{}", section_style("  ⌨️  Navigation"));
-    self.print_help_item(&key_style("↑/↓"), &desc_style("Browse command history"));
-    self.print_help_item(&key_style("Ctrl+R"), &desc_style("Search in history"));
-    self.print_help_item(&key_style("Ctrl+C"), &desc_style("Interrupt input"));
-    self.print_help_item(&key_style("Ctrl+D"), &desc_style("Exit REPL"));
+    println!("\n  {}", "Navigation".bright_yellow().bold());
+    println!("    {:12} {}", "↑/↓".bright_magenta(), "Browse history");
+    println!("    {:12} {}", "Ctrl+R".bright_magenta(), "Search history");
+    println!("    {:12} {}", "Ctrl+C".bright_magenta(), "Interrupt");
+    println!("    {:12} {}", "Ctrl+D".bright_magenta(), "Exit");
 
-    println!("\n{}", section_style("  🔧 Built-in Functions"));
-    self.print_help_category("Arithmetic", "+ - * / mod rem quot");
-    self.print_help_category("Comparison", "= not= < > <= >=");
-    self.print_help_category("Logic", "and or not");
-    self.print_help_category("Predicates", "zero? pos? neg? even? odd?");
-    self.print_help_category("Strings", "str join split upper lower trim");
-
-    println!("\n{}", section_style("  ✨ Examples"));
-
-    self.print_example("Arithmetic", "(+ 1 2 3)", "6");
-    self.print_example("Variables", "(def x 42)", "42");
-    self.print_example("Conditionals", "(if (> 5 3) \"yes\" \"no\")", "\"yes\"");
-    self.print_example("Functions", "((fn [x] (* x x)) 5)", "25");
-    self.print_example("Let bindings", "(let [x 10 y 20] (+ x y))", "30");
-
-    println!("\n{}", separator);
-    println!(
-      "  {}",
-      "Start typing expressions to evaluate them!"
-        .italic()
-        .bright_blue()
-    );
-    println!("{}\n", separator);
-  }
-
-  fn print_help_item(
-    &self,
-    command: &colored::ColoredString,
-    description: &colored::ColoredString,
-  ) {
-    println!("    {:12} {}", command, description);
-  }
-
-  fn print_help_category(&self, name: &str, functions: &str) {
-    println!(
-      "    {} {}",
-      format!("{:12}", name).bright_cyan(),
-      functions.bright_white()
-    );
-  }
-
-  fn print_example(&self, category: &str, code: &str, result: &str) {
-    println!("\n    {} :", category.bright_cyan().underline());
-    println!(
-      "      {} {}",
-      code.bright_white(),
-      format!("→ {}", result).bright_green()
-    );
+    println!("\n{}\n", separator);
   }
 
   fn evaluate_expression(&mut self, input: &str) -> Result<String, String> {
-    // Simple echo REPL - just return the input
-    Ok(format!("{}", input))
+    match parser::parse(input) {
+      Ok(Some((value, _))) => {
+        // TODO: Evaluate the parsed value
+        Ok(format!("{}", value))
+      }
+      Ok(None) => Err("Empty input".to_string()),
+      Err(e) => Err(format!("Parse error: {}", e)),
+    }
   }
 }
 

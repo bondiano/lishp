@@ -4,6 +4,7 @@ use std::{fmt, rc::Rc};
 pub enum LishpValue {
   Number(i64),
   String(String),
+  Symbol(String),
   Bool(bool),
   Nil,
 
@@ -38,7 +39,8 @@ impl fmt::Display for LishpValue {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       LishpValue::Number(value) => write!(f, "{}", value),
-      LishpValue::String(value) => write!(f, "{}", value),
+      LishpValue::String(value) => write!(f, "\"{}\"", value),
+      LishpValue::Symbol(value) => write!(f, "{}", value),
       LishpValue::Bool(value) => write!(f, "{}", value),
       LishpValue::Nil => write!(f, "nil"),
       LishpValue::Cons(_, _) => {
@@ -99,6 +101,14 @@ pub fn list(items: Vec<LishpValue>) -> LishpValue {
     .fold(LishpValue::Nil, |acc, item| cons(item, acc))
 }
 
+pub struct Symbol(pub &'static str);
+
+impl From<Symbol> for LishpValue {
+  fn from(value: Symbol) -> Self {
+    LishpValue::Symbol(value.0.to_string())
+  }
+}
+
 #[macro_export]
 macro_rules! lishp_list {
     [] => {
@@ -112,6 +122,13 @@ macro_rules! lishp_list {
         }
         result
     }};
+}
+
+#[macro_export]
+macro_rules! sym {
+    ($s:expr) => {
+        $crate::value::Symbol($s)
+    };
 }
 
 #[cfg(test)]
