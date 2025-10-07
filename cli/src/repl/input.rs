@@ -1,0 +1,81 @@
+use colored::*;
+use rustyline::error::ReadlineError;
+use rustyline::{DefaultEditor, Result as RustyResult};
+
+use super::eval::{EvalError, process_input};
+
+pub struct InputHandler {
+  buffer: String,
+  line_number: usize,
+}
+
+impl InputHandler {
+  pub fn new() -> Self {
+    Self {
+      buffer: String::new(),
+      line_number: 1,
+    }
+  }
+
+  pub fn line_number(&self) -> usize {
+    self.line_number
+  }
+
+  pub fn is_multiline(&self) -> bool {
+    !self.buffer.is_empty()
+  }
+
+  pub fn clear_buffer(&mut self) {
+    self.buffer.clear();
+  }
+
+  pub fn handle_line(
+    &mut self,
+    line: String,
+    editor: &mut DefaultEditor,
+  ) -> RustyResult<LineResult> {
+    // Add line to buffer
+    if !self.buffer.is_empty() {
+      self.buffer.push('\n');
+    }
+    self.buffer.push_str(&line);
+
+    // Try to evaluate
+    match process_input(&self.buffer, true) {
+      Ok(result) => {
+        editor.add_history_entry(self.buffer.as_str())?;
+        self.buffer.clear();
+        self.line_number += 1;
+        Ok(LineResult::Complete(result))
+      }
+      Err(EvalError::Incomplete) => Ok(LineResult::NeedMore),
+      Err(EvalError::Error(msg)) => {
+        self.buffer.clear();
+        Ok(LineResult::Error(msg))
+      }
+    }
+  }
+}
+
+pub enum LineResult {
+  Complete(String),
+  NeedMore,
+  Error(String),
+}
+
+pub fn handle_interrupt(handler: &mut InputHandler) {
+  println!("{}", "^C".yellow());
+  handler.clear_buffer();
+}
+
+pub fn handle_eof() {
+  println!(
+    "\n{} {}",
+    "👋".bright_yellow(),
+    "Thanks for using Lishp! Goodbye!".bright_cyan().italic()
+  );
+}
+
+pub fn handle_error(err: ReadlineError) {
+  eprintln!("{} {:?}", "Error:".red().bold(), err);
+}

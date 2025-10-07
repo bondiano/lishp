@@ -117,7 +117,13 @@ fn parse_list(i: &str) -> IResult<&str, LishpValue> {
   .parse(i)
 }
 
-pub fn parse(input: &str) -> Result<Option<(LishpValue, &str)>, String> {
+#[derive(Debug, PartialEq)]
+pub enum ParseError {
+  Incomplete,
+  Error(String),
+}
+
+pub fn parse(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError> {
   let trimmed = match skip_ws_and_comments(input) {
     Ok((rest, _)) => rest,
     Err(_) => input,
@@ -129,8 +135,10 @@ pub fn parse(input: &str) -> Result<Option<(LishpValue, &str)>, String> {
 
   match parse_value(trimmed) {
     Ok((remaining, value)) => Ok(Some((value, remaining))),
-    Err(Err::Error(e)) | Err(Err::Failure(e)) => Err(format!("Parse error at: {:?}", e)),
-    Err(Err::Incomplete(_)) => Err("Incomplete input".to_string()),
+    Err(Err::Error(e)) | Err(Err::Failure(e)) => {
+      Err(ParseError::Error(format!("Parse error at: {:?}", e)))
+    }
+    Err(Err::Incomplete(_)) => Err(ParseError::Incomplete),
   }
 }
 

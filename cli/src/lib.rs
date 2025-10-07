@@ -1,11 +1,13 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
+use lishp::parser;
 
 use crate::repl::ReplSession;
 
 #[derive(Parser)]
 #[command(name = "lishp")]
+#[command(about = "Lishp - A Lisp interpreter", long_about = None)]
 #[command(version)]
 pub struct Cli {
   #[command(subcommand)]
@@ -16,9 +18,74 @@ pub struct Cli {
 pub enum Commands {
   /// Start an interactive REPL
   Repl,
+  /// Run Lishp code
+  Run {
+    /// Evaluate expression from command line
+    #[arg(short, long)]
+    eval: Option<String>,
+    /// Run Lishp files (multiple files will share context)
+    #[arg(value_name = "FILES")]
+    files: Vec<String>,
+  },
 }
 
 pub fn run_repl() -> Result<(), String> {
   let mut session = ReplSession::new().map_err(|e| format!("Failed to initialize REPL: {}", e))?;
   session.run().map_err(|e| format!("REPL error: {}", e))
+}
+
+pub fn evaluate_expression(input: &str) -> Result<String, String> {
+  let mut remaining = input;
+  let mut results = Vec::new();
+
+  loop {
+    match parser::parse(remaining) {
+      Ok(Some((value, rest))) => {
+        // TODO: Evaluate the parsed value
+        let result = format!("{}", value);
+        results.push(result);
+        remaining = rest;
+
+        let trimmed = remaining.trim();
+        if trimmed.is_empty() {
+          break;
+        }
+        remaining = trimmed;
+      }
+      Ok(None) => break,
+      Err(e) => return Err(format!("{:?}", e)),
+    }
+  }
+
+  Ok(results.last().cloned().unwrap_or_else(|| "nil".to_string()))
+}
+
+pub fn run_eval(expression: &str) -> Result<(), String> {
+  let result = evaluate_expression(expression)?;
+  println!("{}", result);
+  Ok(())
+}
+
+pub fn run_file(path: &str) -> Result<(), String> {
+  let contents =
+    std::fs::read_to_string(path).map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
+  evaluate_expression(&contents)?;
+  Ok(())
+}
+
+pub fn run_files(paths: &[String]) -> Result<(), String> {
+  let mut last_result = None;
+
+  for path in paths {
+    let contents = std::fs::read_to_string(path)
+      .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
+    let result = evaluate_expression(&contents)?;
+    last_result = Some(result);
+  }
+
+  if let Some(result) = last_result {
+    println!("{}", result);
+  }
+
+  Ok(())
 }

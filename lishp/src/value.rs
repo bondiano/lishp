@@ -126,9 +126,9 @@ macro_rules! lishp_list {
 
 #[macro_export]
 macro_rules! sym {
-    ($s:expr) => {
-        $crate::value::Symbol($s)
-    };
+  ($s:expr) => {
+    $crate::value::Symbol($s)
+  };
 }
 
 #[cfg(test)]
@@ -157,6 +157,6 @@ mod tests {
   #[test]
   fn test_display() {
     let list = lishp_list!["str", 2, 3];
-    assert_eq!(list.to_string(), "(str 2 3)");
+    assert_eq!(list.to_string(), "(\"str\" 2 3)");
   }
 }
