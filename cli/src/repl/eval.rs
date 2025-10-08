@@ -39,6 +39,9 @@ pub fn process_input(input: &str, interactive_mode: bool) -> Result<String, Eval
       Err(ParseError::Incomplete) => {
         return Err(EvalError::Incomplete);
       }
+      Err(ParseError::UnmatchedClosing) => {
+        return Err(EvalError::Error("Unexpected closing parenthesis ')'".to_string()));
+      }
       Err(ParseError::Error(e)) => {
         return Err(EvalError::Error(e));
       }

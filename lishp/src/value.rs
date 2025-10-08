@@ -1,19 +1,58 @@
-use std::{fmt, rc::Rc};
+use std::{fmt, rc::Rc, str::FromStr};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpecialForm {
+  Define,
+  If,
+  Quote,
+}
+
+impl FromStr for SpecialForm {
+  type Err = String;
+
+  fn from_str(value: &str) -> Result<Self, Self::Err> {
+    match value {
+      "def" => Ok(SpecialForm::Define),
+      "if" => Ok(SpecialForm::If),
+      "quote" => Ok(SpecialForm::Quote),
+      _ => Err(format!("Invalid special form: {}", value)),
+    }
+  }
+}
+
+impl fmt::Display for SpecialForm {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      SpecialForm::Define => write!(f, "def"),
+      SpecialForm::If => write!(f, "if"),
+      SpecialForm::Quote => write!(f, "quote"),
+    }
+  }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LishpValue {
-  Number(i64),
+  Integer(i64),
+  Double(f64),
   String(String),
   Symbol(String),
   Bool(bool),
   Nil,
+
+  SpecialForm(SpecialForm),
 
   Cons(Rc<LishpValue>, Rc<LishpValue>),
 }
 
 impl From<i64> for LishpValue {
   fn from(value: i64) -> Self {
-    LishpValue::Number(value)
+    LishpValue::Integer(value)
+  }
+}
+
+impl From<f64> for LishpValue {
+  fn from(value: f64) -> Self {
+    LishpValue::Double(value)
   }
 }
 
@@ -38,11 +77,26 @@ impl From<bool> for LishpValue {
 impl fmt::Display for LishpValue {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      LishpValue::Number(value) => write!(f, "{}", value),
-      LishpValue::String(value) => write!(f, "\"{}\"", value),
+      LishpValue::Integer(value) => write!(f, "{}", value),
+      LishpValue::Double(value) => write!(f, "{}", value),
+      LishpValue::String(value) => {
+        write!(f, "\"")?;
+        for c in value.chars() {
+          match c {
+            '\n' => write!(f, "\\n")?,
+            '\r' => write!(f, "\\r")?,
+            '\t' => write!(f, "\\t")?,
+            '\\' => write!(f, "\\\\")?,
+            '"' => write!(f, "\\\"")?,
+            c => write!(f, "{}", c)?,
+          }
+        }
+        write!(f, "\"")
+      }
       LishpValue::Symbol(value) => write!(f, "{}", value),
       LishpValue::Bool(value) => write!(f, "{}", value),
       LishpValue::Nil => write!(f, "nil"),
+      LishpValue::SpecialForm(value) => write!(f, "{}", value),
       LishpValue::Cons(_, _) => {
         write!(f, "(")?;
 

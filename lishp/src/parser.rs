@@ -1,74 +1,214 @@
-use crate::value::LishpValue;
+use crate::value::{LishpValue, SpecialForm};
 use nom::{
   Err, IResult, Parser,
   branch::alt,
-  bytes::complete::{escaped, tag, take_while, take_while1},
-  character::complete::{char, multispace0, none_of, one_of},
-  combinator::{map, opt, recognize, value},
+  bytes::complete::{tag, take_while, take_while1},
+  character::complete::{char, digit1, multispace0, one_of},
+  combinator::{map, map_res, opt, recognize, value},
   multi::many0,
   sequence::{delimited, preceded},
 };
+use std::rc::Rc;
+
+fn is_delimiter(c: char) -> bool {
+  c.is_whitespace() || c == ')' || c == '(' || c == ';'
+}
+
+fn parse_exponent(i: &str) -> IResult<&str, &str> {
+  recognize((one_of("eE"), opt(one_of("+-")), digit1)).parse(i)
+}
+
+fn parse_scientific(i: &str) -> IResult<&str, LishpValue> {
+  let (rest, value) = map_res(
+    recognize((
+      opt(char('-')),
+      alt((
+        recognize((digit1, char('.'), opt(digit1))),
+        recognize((char('.'), digit1)),
+        digit1,
+      )),
+      parse_exponent,
+    )),
+    |s: &str| s.parse::<f64>().map(LishpValue::Double),
+  )
+  .parse(i)?;
+
+  if let Some(next_char) = rest.chars().next() {
+    if !is_delimiter(next_char) {
+      return Err(nom::Err::Failure(nom::error::Error::new(
+        i,
+        nom::error::ErrorKind::Digit,
+      )));
+    }
+  }
+
+  Ok((rest, value))
+}
+
+fn parse_float(i: &str) -> IResult<&str, LishpValue> {
+  let (rest, value) = map_res(
+    alt((
+      recognize((char('.'), digit1)),
+      recognize((opt(char('-')), digit1, char('.'), opt(digit1))),
+      recognize((char('-'), char('.'), digit1)),
+    )),
+    |s: &str| s.parse::<f64>().map(LishpValue::Double),
+  )
+  .parse(i)?;
+
+  if let Some(next_char) = rest.chars().next() {
+    if !is_delimiter(next_char) {
+      return Err(nom::Err::Failure(nom::error::Error::new(
+        i,
+        nom::error::ErrorKind::Digit,
+      )));
+    }
+  }
+
+  Ok((rest, value))
+}
+
+fn parse_integer(i: &str) -> IResult<&str, LishpValue> {
+  let (rest, value) = map_res(recognize((opt(char('-')), digit1)), |s: &str| {
+    s.parse::<i64>().map(LishpValue::Integer)
+  })
+  .parse(i)?;
+
+  // Check that next char is a delimiter - use Failure to prevent backtracking
+  if let Some(next_char) = rest.chars().next() {
+    if !is_delimiter(next_char) {
+      return Err(nom::Err::Failure(nom::error::Error::new(
+        i,
+        nom::error::ErrorKind::Digit,
+      )));
+    }
+  }
+
+  Ok((rest, value))
+}
 
 fn parse_number(i: &str) -> IResult<&str, LishpValue> {
-  map(
-    recognize(preceded(
-      opt(char('-')),
-      take_while1(|c: char| c.is_ascii_digit()),
-    )),
-    |s: &str| LishpValue::Number(s.parse().expect("Failed to parse validated number string")),
-  )
+  alt((parse_scientific, parse_float, parse_integer)).parse(i)
+}
+
+fn is_symbol_char(c: char) -> bool {
+  c.is_alphanumeric()
+    || c == '-'
+    || c == '_'
+    || c == '+'
+    || c == '*'
+    || c == '/'
+    || c == '='
+    || c == '<'
+    || c == '>'
+    || c == '?'
+    || c == '!'
+}
+
+fn parse_keyword(keyword: &'static str) -> impl Fn(&str) -> IResult<&str, &str> {
+  move |i: &str| {
+    let (rest, matched) = tag(keyword)(i)?;
+    if let Some(next_char) = rest.chars().next() {
+      if is_symbol_char(next_char) {
+        return Err(nom::Err::Error(nom::error::Error::new(
+          i,
+          nom::error::ErrorKind::Tag,
+        )));
+      }
+    }
+    Ok((rest, matched))
+  }
+}
+
+fn parse_special_form(i: &str) -> IResult<&str, LishpValue> {
+  alt((
+    value(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      parse_keyword("def"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::If),
+      parse_keyword("if"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Quote),
+      parse_keyword("quote"),
+    ),
+  ))
   .parse(i)
+}
+
+fn parse_string_content(i: &str) -> IResult<&str, String> {
+  let mut result = String::new();
+  let mut input = i;
+
+  loop {
+    if let Ok((rest, _)) = char::<_, nom::error::Error<&str>>('\\')(input) {
+      if let Ok((rest, c)) = one_of::<_, _, nom::error::Error<&str>>("\"nrt\\")(rest) {
+        result.push(match c {
+          'n' => '\n',
+          'r' => '\r',
+          't' => '\t',
+          '\\' => '\\',
+          '"' => '"',
+          _ => c,
+        });
+        input = rest;
+        continue;
+      }
+    }
+
+    if char::<_, nom::error::Error<&str>>('"')(input).is_ok() {
+      break;
+    }
+
+    if let Some(c) = input.chars().next() {
+      result.push(c);
+      input = &input[c.len_utf8()..];
+    } else {
+      return Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Eof,
+      )));
+    }
+  }
+
+  Ok((input, result))
 }
 
 fn parse_string(i: &str) -> IResult<&str, LishpValue> {
   map(
-    delimited(
-      char('"'),
-      escaped(none_of("\\\""), '\\', one_of("\"nrt\\")),
-      char('"'),
-    ),
-    |s: &str| {
-      let unescaped = s
-        .replace("\\n", "\n")
-        .replace("\\r", "\r")
-        .replace("\\t", "\t")
-        .replace("\\\\", "\\")
-        .replace("\\\"", "\"");
-      LishpValue::String(unescaped)
-    },
+    delimited(char('"'), parse_string_content, char('"')),
+    LishpValue::String,
   )
   .parse(i)
 }
 
 fn parse_bool(i: &str) -> IResult<&str, LishpValue> {
   alt((
-    map(tag("true"), |_| LishpValue::Bool(true)),
-    map(tag("false"), |_| LishpValue::Bool(false)),
+    map(parse_keyword("true"), |_| LishpValue::Bool(true)),
+    map(parse_keyword("false"), |_| LishpValue::Bool(false)),
   ))
   .parse(i)
 }
 
 fn parse_nil(i: &str) -> IResult<&str, LishpValue> {
-  map(tag("nil"), |_| LishpValue::Nil).parse(i)
+  map(parse_keyword("nil"), |_| LishpValue::Nil).parse(i)
 }
 
 fn parse_symbol(i: &str) -> IResult<&str, LishpValue> {
-  map(
-    take_while1(|c: char| {
-      c.is_alphanumeric()
-        || c == '-'
-        || c == '_'
-        || c == '+'
-        || c == '*'
-        || c == '/'
-        || c == '='
-        || c == '<'
-        || c == '>'
-        || c == '?'
-        || c == '!'
-    }),
-    |s: &str| LishpValue::Symbol(s.to_string()),
-  )
+  if let Some(first_char) = i.chars().next() {
+    if first_char.is_ascii_digit() {
+      return Err(nom::Err::Error(nom::error::Error::new(
+        i,
+        nom::error::ErrorKind::Alpha,
+      )));
+    }
+  }
+
+  map(take_while1(is_symbol_char), |s: &str| {
+    LishpValue::Symbol(s.to_string())
+  })
   .parse(i)
 }
 
@@ -90,14 +230,45 @@ fn skip_ws_and_comments(i: &str) -> IResult<&str, ()> {
   Ok((input, ()))
 }
 
+fn parse_quoted(i: &str) -> IResult<&str, LishpValue> {
+  let (rest, _) = char('\'')(i)?;
+
+  let (after_ws, _) = skip_ws_and_comments(rest)?;
+  if after_ws.is_empty() {
+    return Err(nom::Err::Failure(nom::error::Error::new(
+      i,
+      nom::error::ErrorKind::Eof,
+    )));
+  }
+
+  if let Some(')') = after_ws.chars().next() {
+    return Err(nom::Err::Failure(nom::error::Error::new(
+      i,
+      nom::error::ErrorKind::Tag,
+    )));
+  }
+
+  let (rest, expr) = parse_value(rest)?;
+
+  Ok((
+    rest,
+    LishpValue::Cons(
+      Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
+      Rc::new(LishpValue::Cons(Rc::new(expr), Rc::new(LishpValue::Nil))),
+    ),
+  ))
+}
+
 fn parse_value(i: &str) -> IResult<&str, LishpValue> {
   preceded(
     skip_ws_and_comments,
     alt((
+      parse_quoted,
       parse_nil,
       parse_bool,
       parse_number,
       parse_string,
+      parse_special_form,
       parse_list,
       parse_symbol,
     )),
@@ -120,7 +291,50 @@ fn parse_list(i: &str) -> IResult<&str, LishpValue> {
 #[derive(Debug, PartialEq)]
 pub enum ParseError {
   Incomplete,
+  UnmatchedClosing,
   Error(String),
+}
+
+enum BalanceState {
+  Balanced,
+  Incomplete,
+  UnmatchedClosing,
+}
+
+fn check_balanced(input: &str) -> BalanceState {
+  let mut paren_depth = 0;
+  let mut in_string = false;
+  let mut escaped = false;
+
+  for c in input.chars() {
+    if in_string {
+      if escaped {
+        escaped = false;
+      } else if c == '\\' {
+        escaped = true;
+      } else if c == '"' {
+        in_string = false;
+      }
+    } else {
+      match c {
+        '"' => in_string = true,
+        '(' => paren_depth += 1,
+        ')' => {
+          paren_depth -= 1;
+          if paren_depth < 0 {
+            return BalanceState::UnmatchedClosing;
+          }
+        }
+        _ => {}
+      }
+    }
+  }
+
+  if in_string || paren_depth > 0 {
+    BalanceState::Incomplete
+  } else {
+    BalanceState::Balanced
+  }
 }
 
 pub fn parse(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError> {
@@ -133,10 +347,30 @@ pub fn parse(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError> {
     return Ok(None);
   }
 
+  match check_balanced(trimmed) {
+    BalanceState::Incomplete => return Err(ParseError::Incomplete),
+    BalanceState::UnmatchedClosing => return Err(ParseError::UnmatchedClosing),
+    BalanceState::Balanced => {}
+  }
+
   match parse_value(trimmed) {
     Ok((remaining, value)) => Ok(Some((value, remaining))),
-    Err(Err::Error(e)) | Err(Err::Failure(e)) => {
-      Err(ParseError::Error(format!("Parse error at: {:?}", e)))
+    Err(Err::Error(_)) | Err(Err::Failure(_)) => {
+      let has_quote_error = trimmed.starts_with('\'')
+        || trimmed.contains("')")
+        || trimmed.chars().any(|c| c == '\'') && trimmed.chars().filter(|c| *c == ')').count() > 0;
+
+      let error_msg = if has_quote_error {
+        "Expected valid expression after quote ('), but found nothing or invalid syntax"
+      } else {
+        "Parse error: invalid syntax"
+      };
+
+      Err(ParseError::Error(format!(
+        "{} at position: {}",
+        error_msg,
+        trimmed.get(..20).unwrap_or(trimmed)
+      )))
     }
     Err(Err::Incomplete(_)) => Err(ParseError::Incomplete),
   }
@@ -148,18 +382,78 @@ mod tests {
   use crate::{lishp_list, sym, value::cons};
 
   #[test]
-  fn test_parse_number() {
+  fn test_parse_integer() {
     assert_eq!(
-      parse("42").expect("Failed to parse number 42"),
-      Some((LishpValue::Number(42), ""))
+      parse("42").expect("Failed to parse integer 42"),
+      Some((LishpValue::Integer(42), ""))
     );
     assert_eq!(
-      parse("-42").expect("Failed to parse number -42"),
-      Some((LishpValue::Number(-42), ""))
+      parse("-42").expect("Failed to parse integer -42"),
+      Some((LishpValue::Integer(-42), ""))
     );
     assert_eq!(
-      parse("0").expect("Failed to parse number 0"),
-      Some((LishpValue::Number(0), ""))
+      parse("0").expect("Failed to parse integer 0"),
+      Some((LishpValue::Integer(0), ""))
+    );
+  }
+
+  #[test]
+  fn test_parse_float() {
+    assert_eq!(
+      parse("42.5").expect("Failed to parse float 42.5"),
+      Some((LishpValue::Double(42.5), ""))
+    );
+    assert_eq!(
+      parse("-42.5").expect("Failed to parse float -42.5"),
+      Some((LishpValue::Double(-42.5), ""))
+    );
+    assert_eq!(
+      parse("0.5").expect("Failed to parse float 0.5"),
+      Some((LishpValue::Double(0.5), ""))
+    );
+    assert_eq!(
+      parse(".5").expect("Failed to parse float .5"),
+      Some((LishpValue::Double(0.5), ""))
+    );
+    assert_eq!(
+      parse("-.5").expect("Failed to parse float -.5"),
+      Some((LishpValue::Double(-0.5), ""))
+    );
+    assert_eq!(
+      parse("42.").expect("Failed to parse float 42."),
+      Some((LishpValue::Double(42.0), ""))
+    );
+  }
+
+  #[test]
+  fn test_parse_scientific() {
+    assert_eq!(
+      parse("1e10").expect("Failed to parse scientific 1e10"),
+      Some((LishpValue::Double(1e10), ""))
+    );
+    assert_eq!(
+      parse("1E10").expect("Failed to parse scientific 1E10"),
+      Some((LishpValue::Double(1e10), ""))
+    );
+    assert_eq!(
+      parse("1.5e10").expect("Failed to parse scientific 1.5e10"),
+      Some((LishpValue::Double(1.5e10), ""))
+    );
+    assert_eq!(
+      parse("1e-10").expect("Failed to parse scientific 1e-10"),
+      Some((LishpValue::Double(1e-10), ""))
+    );
+    assert_eq!(
+      parse("1.5e-10").expect("Failed to parse scientific 1.5e-10"),
+      Some((LishpValue::Double(1.5e-10), ""))
+    );
+    assert_eq!(
+      parse("-1e10").expect("Failed to parse scientific -1e10"),
+      Some((LishpValue::Double(-1e10), ""))
+    );
+    assert_eq!(
+      parse("1e+10").expect("Failed to parse scientific 1e+10"),
+      Some((LishpValue::Double(1e10), ""))
     );
   }
 
@@ -269,5 +563,226 @@ mod tests {
       .expect("Expected Some value");
     assert_eq!(first, lishp_list![sym!("+"), 1, 2]);
     assert_eq!(remaining.trim(), "(- 3 4)");
+  }
+
+  #[test]
+  fn test_incomplete_expression() {
+    assert_eq!(parse("(+ 1"), Err(ParseError::Incomplete));
+    assert_eq!(parse("(+ 1 2"), Err(ParseError::Incomplete));
+    assert_eq!(parse("((+ 1 2)"), Err(ParseError::Incomplete));
+  }
+
+  #[test]
+  fn test_incomplete_string() {
+    assert_eq!(parse("\"hello"), Err(ParseError::Incomplete));
+    assert_eq!(parse("(+ \"hello)"), Err(ParseError::Incomplete));
+  }
+
+  #[test]
+  fn test_balanced_expressions() {
+    assert!(parse("(+ 1 2)").is_ok());
+    assert!(parse("()").is_ok());
+    assert!(parse("\"hello\"").is_ok());
+  }
+
+  #[test]
+  fn test_unmatched_closing_paren() {
+    assert_eq!(parse(")"), Err(ParseError::UnmatchedClosing));
+    assert_eq!(parse("(+ 1 2))"), Err(ParseError::UnmatchedClosing));
+    assert_eq!(parse(") (+ 1 2)"), Err(ParseError::UnmatchedClosing));
+  }
+
+  #[test]
+  fn test_parse_special_form() {
+    assert_eq!(
+      parse("def").expect("Failed to parse special form def"),
+      Some((LishpValue::SpecialForm(SpecialForm::Define), ""))
+    );
+    assert_eq!(
+      parse("if").expect("Failed to parse special form if"),
+      Some((LishpValue::SpecialForm(SpecialForm::If), ""))
+    );
+    assert_eq!(
+      parse("quote").expect("Failed to parse special form quote"),
+      Some((LishpValue::SpecialForm(SpecialForm::Quote), ""))
+    );
+  }
+
+  #[test]
+  fn test_parse_special_form_with_space() {
+    assert_eq!(
+      parse("def ").expect("Failed to parse 'def '"),
+      Some((LishpValue::SpecialForm(SpecialForm::Define), " "))
+    );
+    assert_eq!(
+      parse("if x").expect("Failed to parse 'if x'"),
+      Some((LishpValue::SpecialForm(SpecialForm::If), " x"))
+    );
+  }
+
+  #[test]
+  fn test_parse_symbol_not_special_form() {
+    assert_eq!(
+      parse("define").expect("Failed to parse symbol 'define'"),
+      Some((LishpValue::Symbol("define".to_string()), ""))
+    );
+    assert_eq!(
+      parse("defn").expect("Failed to parse symbol 'defn'"),
+      Some((LishpValue::Symbol("defn".to_string()), ""))
+    );
+    assert_eq!(
+      parse("iffy").expect("Failed to parse symbol 'iffy'"),
+      Some((LishpValue::Symbol("iffy".to_string()), ""))
+    );
+    assert_eq!(
+      parse("letter").expect("Failed to parse symbol 'letter'"),
+      Some((LishpValue::Symbol("letter".to_string()), ""))
+    );
+  }
+
+  #[test]
+  fn parse_quote() {
+    assert_eq!(
+      parse("'(1 2 3)").expect("Failed to parse quote '(1 2 3)"),
+      Some((
+        LishpValue::Cons(
+          Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
+          Rc::new(LishpValue::Cons(
+            Rc::new(lishp_list![1, 2, 3]),
+            Rc::new(LishpValue::Nil)
+          ))
+        ),
+        ""
+      ))
+    );
+  }
+
+  #[test]
+  fn parse_quote_number() {
+    assert_eq!(
+      parse("'1").expect("Failed to parse quote '1"),
+      Some((
+        LishpValue::Cons(
+          Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
+          Rc::new(LishpValue::Cons(
+            Rc::new(LishpValue::Integer(1)),
+            Rc::new(LishpValue::Nil)
+          ))
+        ),
+        ""
+      ))
+    );
+  }
+
+  #[test]
+  fn parse_quote_symbol() {
+    assert_eq!(
+      parse("'def").expect("Failed to parse quote 'def"),
+      Some((
+        LishpValue::Cons(
+          Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
+          Rc::new(LishpValue::Cons(
+            Rc::new(LishpValue::SpecialForm(SpecialForm::Define)),
+            Rc::new(LishpValue::Nil)
+          ))
+        ),
+        ""
+      ))
+    );
+
+    assert_eq!(
+      parse("'asd").expect("Failed to parse quote 'asd"),
+      Some((
+        LishpValue::Cons(
+          Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
+          Rc::new(LishpValue::Cons(
+            Rc::new(LishpValue::Symbol("asd".to_string())),
+            Rc::new(LishpValue::Nil)
+          ))
+        ),
+        ""
+      ))
+    );
+  }
+
+  #[test]
+  fn parse_quote_expression() {
+    assert_eq!(
+      parse("'(def a 1)").expect("Failed to parse quote '(def a 1)"),
+      Some((
+        LishpValue::Cons(
+          Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
+          Rc::new(LishpValue::Cons(
+            Rc::new(lishp_list![
+              LishpValue::SpecialForm(SpecialForm::Define),
+              sym!("a"),
+              1
+            ]),
+            Rc::new(LishpValue::Nil)
+          ))
+        ),
+        ""
+      ))
+    );
+  }
+
+  #[test]
+  fn parse_empty_quote() {
+    assert!(parse("'").is_err());
+  }
+
+  #[test]
+  fn parse_quote_closing_paren() {
+    assert!(parse("(')").is_err());
+    assert!(parse("(' )").is_err());
+  }
+
+  #[test]
+  fn test_invalid_number_with_text() {
+    assert!(parse("1t10").is_err());
+    assert!(parse("1a").is_err());
+    assert!(parse("42abc").is_err());
+    assert!(parse("1.5x").is_err());
+    assert!(parse("1e10z").is_err());
+  }
+
+  #[test]
+  fn test_bool_like_symbols() {
+    assert_eq!(
+      parse("truex").expect("Failed to parse symbol 'truex'"),
+      Some((LishpValue::Symbol("truex".to_string()), ""))
+    );
+    assert_eq!(
+      parse("falsea").expect("Failed to parse symbol 'falsea'"),
+      Some((LishpValue::Symbol("falsea".to_string()), ""))
+    );
+  }
+
+  #[test]
+  fn test_nil_like_symbols() {
+    assert_eq!(
+      parse("nilx").expect("Failed to parse symbol 'nilx'"),
+      Some((LishpValue::Symbol("nilx".to_string()), ""))
+    );
+  }
+
+  #[test]
+  fn test_valid_number_with_delimiter() {
+    assert_eq!(
+      parse("42 ").expect("Failed to parse '42 '"),
+      Some((LishpValue::Integer(42), " "))
+    );
+    assert_eq!(
+      parse("(42)").expect("Failed to parse '(42)'"),
+      Some((lishp_list![42], ""))
+    );
+    assert_eq!(
+      parse("42\n").expect("Failed to parse '42\\n'"),
+      Some((LishpValue::Integer(42), "\n"))
+    );
+    assert_eq!(
+      parse("42\t").expect("Failed to parse '42\\t'"),
+      Some((LishpValue::Integer(42), "\t"))
+    );
   }
 }

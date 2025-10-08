@@ -101,7 +101,7 @@ impl ReplSession {
 
   fn create_prompt(&self) -> String {
     if self.input_handler.is_multiline() {
-      format!("{}    ", "....".bright_black())
+      "".to_string()
     } else {
       format!(
         "{}{}❯ ",
