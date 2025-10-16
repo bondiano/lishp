@@ -1,4 +1,4 @@
-use crate::value::{LishpValue, SpecialForm};
+use crate::value::{BinaryOperator, BinaryPredicate, LishpValue, SpecialForm};
 use nom::{
   Err, IResult, Parser,
   branch::alt,
@@ -134,6 +134,90 @@ fn parse_special_form(i: &str) -> IResult<&str, LishpValue> {
       LishpValue::SpecialForm(SpecialForm::Quote),
       parse_keyword("quote"),
     ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Eval),
+      parse_keyword("eval"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Car),
+      parse_keyword("car"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Cdr),
+      parse_keyword("cdr"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Cons),
+      parse_keyword("cons"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Do),
+      parse_keyword("do"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::TypeOf),
+      parse_keyword("typeof"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Read),
+      parse_keyword("read"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Print),
+      parse_keyword("print"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Symbol),
+      parse_keyword("symbol"),
+    ),
+  ))
+  .parse(i)
+}
+
+fn parse_binary_operator(i: &str) -> IResult<&str, LishpValue> {
+  alt((
+    value(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      parse_keyword("_+_"),
+    ),
+    value(
+      LishpValue::BinaryOperator(BinaryOperator::Subtract),
+      parse_keyword("_-_"),
+    ),
+    value(
+      LishpValue::BinaryOperator(BinaryOperator::Multiply),
+      parse_keyword("_*_"),
+    ),
+    value(
+      LishpValue::BinaryOperator(BinaryOperator::Divide),
+      parse_keyword("_/_"),
+    ),
+    value(
+      LishpValue::BinaryOperator(BinaryOperator::Modulo),
+      parse_keyword("_%_"),
+    ),
+    value(
+      LishpValue::BinaryOperator(BinaryOperator::StrConcat),
+      parse_keyword("_++_"),
+    ),
+  ))
+  .parse(i)
+}
+
+fn parse_binary_predicate(i: &str) -> IResult<&str, LishpValue> {
+  alt((
+    value(
+      LishpValue::BinaryPredicate(BinaryPredicate::Equals),
+      parse_keyword("_=_"),
+    ),
+    value(
+      LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
+      parse_keyword("_<_"),
+    ),
+    value(
+      LishpValue::BinaryPredicate(BinaryPredicate::GreaterThan),
+      parse_keyword("_>_"),
+    ),
   ))
   .parse(i)
 }
@@ -179,7 +263,7 @@ fn parse_string_content(i: &str) -> IResult<&str, String> {
 fn parse_string(i: &str) -> IResult<&str, LishpValue> {
   map(
     delimited(char('"'), parse_string_content, char('"')),
-    LishpValue::String,
+    |s: String| LishpValue::String(s.into()),
   )
   .parse(i)
 }
@@ -207,7 +291,7 @@ fn parse_symbol(i: &str) -> IResult<&str, LishpValue> {
   }
 
   map(take_while1(is_symbol_char), |s: &str| {
-    LishpValue::Symbol(s.to_string())
+    LishpValue::Symbol(s.into())
   })
   .parse(i)
 }
@@ -269,6 +353,8 @@ fn parse_value(i: &str) -> IResult<&str, LishpValue> {
       parse_number,
       parse_string,
       parse_special_form,
+      parse_binary_operator,
+      parse_binary_predicate,
       parse_list,
       parse_symbol,
     )),
@@ -461,11 +547,11 @@ mod tests {
   fn test_parse_string() {
     assert_eq!(
       parse("\"hello\"").expect("Failed to parse string \"hello\""),
-      Some((LishpValue::String("hello".to_string()), ""))
+      Some((LishpValue::String("hello".into()), ""))
     );
     assert_eq!(
       parse("\"hello\\nworld\"").expect("Failed to parse string with escaped newline"),
-      Some((LishpValue::String("hello\nworld".to_string()), ""))
+      Some((LishpValue::String("hello\nworld".into()), ""))
     );
   }
 
@@ -493,11 +579,11 @@ mod tests {
   fn test_parse_symbol() {
     assert_eq!(
       parse("+").expect("Failed to parse symbol +"),
-      Some((LishpValue::Symbol("+".to_string()), ""))
+      Some((LishpValue::Symbol("+".into()), ""))
     );
     assert_eq!(
       parse("define").expect("Failed to parse symbol define"),
-      Some((LishpValue::Symbol("define".to_string()), ""))
+      Some((LishpValue::Symbol("define".into()), ""))
     );
   }
 
@@ -624,19 +710,19 @@ mod tests {
   fn test_parse_symbol_not_special_form() {
     assert_eq!(
       parse("define").expect("Failed to parse symbol 'define'"),
-      Some((LishpValue::Symbol("define".to_string()), ""))
+      Some((LishpValue::Symbol("define".into()), ""))
     );
     assert_eq!(
       parse("defn").expect("Failed to parse symbol 'defn'"),
-      Some((LishpValue::Symbol("defn".to_string()), ""))
+      Some((LishpValue::Symbol("defn".into()), ""))
     );
     assert_eq!(
       parse("iffy").expect("Failed to parse symbol 'iffy'"),
-      Some((LishpValue::Symbol("iffy".to_string()), ""))
+      Some((LishpValue::Symbol("iffy".into()), ""))
     );
     assert_eq!(
       parse("letter").expect("Failed to parse symbol 'letter'"),
-      Some((LishpValue::Symbol("letter".to_string()), ""))
+      Some((LishpValue::Symbol("letter".into()), ""))
     );
   }
 
@@ -696,7 +782,7 @@ mod tests {
         LishpValue::Cons(
           Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
           Rc::new(LishpValue::Cons(
-            Rc::new(LishpValue::Symbol("asd".to_string())),
+            Rc::new(LishpValue::Symbol("asd".into())),
             Rc::new(LishpValue::Nil)
           ))
         ),
@@ -750,11 +836,11 @@ mod tests {
   fn test_bool_like_symbols() {
     assert_eq!(
       parse("truex").expect("Failed to parse symbol 'truex'"),
-      Some((LishpValue::Symbol("truex".to_string()), ""))
+      Some((LishpValue::Symbol("truex".into()), ""))
     );
     assert_eq!(
       parse("falsea").expect("Failed to parse symbol 'falsea'"),
-      Some((LishpValue::Symbol("falsea".to_string()), ""))
+      Some((LishpValue::Symbol("falsea".into()), ""))
     );
   }
 
@@ -762,7 +848,7 @@ mod tests {
   fn test_nil_like_symbols() {
     assert_eq!(
       parse("nilx").expect("Failed to parse symbol 'nilx'"),
-      Some((LishpValue::Symbol("nilx".to_string()), ""))
+      Some((LishpValue::Symbol("nilx".into()), ""))
     );
   }
 

@@ -1,26 +1,29 @@
 use colored::*;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
-use rustyline::history::History;
-use rustyline::{DefaultEditor, Result as RustyResult};
+use rustyline::history::{DefaultHistory, History};
+use rustyline::{Editor, Result as RustyResult};
 use std::env;
 use std::path::PathBuf;
 
 use super::eval::{EvalError, process_input};
+use super::helper::ReplHelper;
 use super::input::{InputHandler, LineResult, handle_eof, handle_error, handle_interrupt};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_HISTORY_SIZE: usize = 1000;
 
 pub struct ReplSession {
-  editor: DefaultEditor,
+  editor: Editor<ReplHelper, DefaultHistory>,
   history_file: PathBuf,
   input_handler: InputHandler,
 }
 
 impl ReplSession {
   pub fn new() -> RustyResult<Self> {
-    let mut editor = DefaultEditor::new()?;
+    let helper = ReplHelper::new();
+    let mut editor = Editor::new()?;
+    editor.set_helper(Some(helper));
 
     let history_file = get_history_file();
     let history_size = get_history_size();
@@ -132,22 +135,75 @@ impl ReplSession {
   }
 
   fn load_file(&mut self, file: &str) -> Result<CommandResult, String> {
-    let mut file = std::fs::File::open(file).map_err(|e| format!("Failed to open file: {}", e))?;
-    let mut contents = String::new();
-    std::io::Read::read_to_string(&mut file, &mut contents)
-      .map_err(|e| format!("Failed to read file: {}", e))?;
+    // Check if file path is empty
+    if file.is_empty() {
+      eprintln!(
+        "{} Please provide a file path: {} or {}",
+        "Error:".red().bold(),
+        ":l <path>".bright_green(),
+        ":load <path>".bright_green()
+      );
+      return Ok(CommandResult::Continue);
+    }
 
+    // Convert to PathBuf for better path handling
+    let path = PathBuf::from(file);
+
+    // Check if file exists
+    if !path.exists() {
+      eprintln!(
+        "{} File not found: {}",
+        "Error:".red().bold(),
+        path.display().to_string().bright_yellow()
+      );
+      return Ok(CommandResult::Continue);
+    }
+
+    // Check if path is a file (not a directory)
+    if !path.is_file() {
+      eprintln!(
+        "{} Path is not a file: {}",
+        "Error:".red().bold(),
+        path.display().to_string().bright_yellow()
+      );
+      return Ok(CommandResult::Continue);
+    }
+
+    // Read file contents
+    let contents = std::fs::read_to_string(&path).map_err(|e| {
+      format!(
+        "Failed to read file '{}': {}",
+        path.display(),
+        e
+      )
+    })?;
+
+    // Process and evaluate the file contents
     match process_input(&contents, false) {
       Ok(result) => {
+        println!(
+          "{} Loaded {}",
+          "✓".bright_green().bold(),
+          path.display().to_string().bright_cyan()
+        );
         println!("{} {}", "=>".bright_green().bold(), result.bright_white());
         Ok(CommandResult::Continue)
       }
       Err(EvalError::Incomplete) => {
-        eprintln!("{} Incomplete input in file", "Error:".red().bold());
+        eprintln!(
+          "{} Incomplete input in file {}",
+          "Error:".red().bold(),
+          path.display().to_string().bright_yellow()
+        );
         Ok(CommandResult::Continue)
       }
       Err(EvalError::Error(msg)) => {
-        eprintln!("{} {}", "Error:".red().bold(), msg);
+        eprintln!(
+          "{} In file {}: {}",
+          "Error:".red().bold(),
+          path.display().to_string().bright_yellow(),
+          msg
+        );
         Ok(CommandResult::Continue)
       }
     }
@@ -202,6 +258,7 @@ fn print_help() {
   println!("    {:12} {}", ":help".bright_green(), "Show this help");
   println!("    {:12} {}", ":quit".bright_green(), "Exit the REPL");
   println!("    {:12} {}", ":history".bright_green(), "Show history");
+  println!("    {:12} {}", ":l <file>".bright_green(), "Load and evaluate a file");
 
   println!("\n  {}", "Navigation".bright_yellow().bold());
   println!("    {:12} {}", "↑/↓".bright_magenta(), "Browse history");
@@ -212,7 +269,7 @@ fn print_help() {
   println!("\n{}\n", separator);
 }
 
-fn print_history(editor: &DefaultEditor) {
+fn print_history(editor: &Editor<ReplHelper, DefaultHistory>) {
   let history = editor.history();
   let separator = "─".repeat(60);
 

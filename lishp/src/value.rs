@@ -1,10 +1,21 @@
 use std::{fmt, rc::Rc, str::FromStr};
 
+use ecow::EcoString;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpecialForm {
   Define,
   If,
   Quote,
+  Eval,
+  Car,
+  Cdr,
+  Cons,
+  Do,
+  TypeOf,
+  Read,
+  Print,
+  Symbol,
 }
 
 impl FromStr for SpecialForm {
@@ -15,6 +26,15 @@ impl FromStr for SpecialForm {
       "def" => Ok(SpecialForm::Define),
       "if" => Ok(SpecialForm::If),
       "quote" => Ok(SpecialForm::Quote),
+      "eval" => Ok(SpecialForm::Eval),
+      "car" => Ok(SpecialForm::Car),
+      "cdr" => Ok(SpecialForm::Cdr),
+      "cons" => Ok(SpecialForm::Cons),
+      "do" => Ok(SpecialForm::Do),
+      "typeof" => Ok(SpecialForm::TypeOf),
+      "read" => Ok(SpecialForm::Read),
+      "print" => Ok(SpecialForm::Print),
+      "symbol" => Ok(SpecialForm::Symbol),
       _ => Err(format!("Invalid special form: {}", value)),
     }
   }
@@ -26,6 +46,84 @@ impl fmt::Display for SpecialForm {
       SpecialForm::Define => write!(f, "def"),
       SpecialForm::If => write!(f, "if"),
       SpecialForm::Quote => write!(f, "quote"),
+      SpecialForm::Eval => write!(f, "eval"),
+      SpecialForm::Car => write!(f, "car"),
+      SpecialForm::Cdr => write!(f, "cdr"),
+      SpecialForm::Cons => write!(f, "cons"),
+      SpecialForm::Do => write!(f, "do"),
+      SpecialForm::TypeOf => write!(f, "typeof"),
+      SpecialForm::Read => write!(f, "read"),
+      SpecialForm::Print => write!(f, "print"),
+      SpecialForm::Symbol => write!(f, "symbol"),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinaryOperator {
+  Add,
+  Subtract,
+  Multiply,
+  Divide,
+  Modulo,
+  StrConcat,
+}
+
+impl FromStr for BinaryOperator {
+  type Err = String;
+
+  fn from_str(value: &str) -> Result<Self, Self::Err> {
+    match value {
+      "_+_" => Ok(BinaryOperator::Add),
+      "_-_" => Ok(BinaryOperator::Subtract),
+      "_*_" => Ok(BinaryOperator::Multiply),
+      "_/_" => Ok(BinaryOperator::Divide),
+      "_%_" => Ok(BinaryOperator::Modulo),
+      "_++_" => Ok(BinaryOperator::StrConcat),
+      _ => Err(format!("Invalid binary operator: {}", value)),
+    }
+  }
+}
+
+impl fmt::Display for BinaryOperator {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      BinaryOperator::Add => write!(f, "_+_"),
+      BinaryOperator::Subtract => write!(f, "_-_"),
+      BinaryOperator::Multiply => write!(f, "_*_"),
+      BinaryOperator::Divide => write!(f, "_/_"),
+      BinaryOperator::Modulo => write!(f, "_%_"),
+      BinaryOperator::StrConcat => write!(f, "_++_"),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinaryPredicate {
+  Equals,
+  LessThan,
+  GreaterThan,
+}
+
+impl FromStr for BinaryPredicate {
+  type Err = String;
+
+  fn from_str(value: &str) -> Result<Self, Self::Err> {
+    match value {
+      "_=_" => Ok(BinaryPredicate::Equals),
+      "_<_" => Ok(BinaryPredicate::LessThan),
+      "_>_" => Ok(BinaryPredicate::GreaterThan),
+      _ => Err(format!("Invalid binary predicate: {}", value)),
+    }
+  }
+}
+
+impl fmt::Display for BinaryPredicate {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      BinaryPredicate::Equals => write!(f, "_=__"),
+      BinaryPredicate::LessThan => write!(f, "_<_"),
+      BinaryPredicate::GreaterThan => write!(f, "_>_"),
     }
   }
 }
@@ -34,12 +132,14 @@ impl fmt::Display for SpecialForm {
 pub enum LishpValue {
   Integer(i64),
   Double(f64),
-  String(String),
-  Symbol(String),
+  String(EcoString),
+  Symbol(EcoString),
   Bool(bool),
   Nil,
 
   SpecialForm(SpecialForm),
+  BinaryOperator(BinaryOperator),
+  BinaryPredicate(BinaryPredicate),
 
   Cons(Rc<LishpValue>, Rc<LishpValue>),
 }
@@ -58,13 +158,13 @@ impl From<f64> for LishpValue {
 
 impl From<String> for LishpValue {
   fn from(value: String) -> Self {
-    LishpValue::String(value)
+    LishpValue::String(value.into())
   }
 }
 
 impl From<&str> for LishpValue {
   fn from(value: &str) -> Self {
-    LishpValue::String(value.to_string())
+    LishpValue::String(value.into())
   }
 }
 
@@ -97,6 +197,8 @@ impl fmt::Display for LishpValue {
       LishpValue::Bool(value) => write!(f, "{}", value),
       LishpValue::Nil => write!(f, "nil"),
       LishpValue::SpecialForm(value) => write!(f, "{}", value),
+      LishpValue::BinaryOperator(value) => write!(f, "{}", value),
+      LishpValue::BinaryPredicate(value) => write!(f, "{}", value),
       LishpValue::Cons(_, _) => {
         write!(f, "(")?;
 
@@ -155,11 +257,11 @@ pub fn list(items: Vec<LishpValue>) -> LishpValue {
     .fold(LishpValue::Nil, |acc, item| cons(item, acc))
 }
 
-pub struct Symbol(pub &'static str);
+pub struct Symbol(pub EcoString);
 
 impl From<Symbol> for LishpValue {
   fn from(value: Symbol) -> Self {
-    LishpValue::Symbol(value.0.to_string())
+    LishpValue::Symbol(value.0.into())
   }
 }
 
@@ -181,7 +283,7 @@ macro_rules! lishp_list {
 #[macro_export]
 macro_rules! sym {
   ($s:expr) => {
-    $crate::value::Symbol($s)
+    $crate::value::Symbol($s.into())
   };
 }
 
@@ -195,16 +297,7 @@ mod tests {
 
     assert_eq!(
       list,
-      LishpValue::Cons(
-        Rc::new(1.into()),
-        Rc::new(LishpValue::Cons(
-          Rc::new(2.into()),
-          Rc::new(LishpValue::Cons(
-            Rc::new(3.into()),
-            Rc::new(LishpValue::Nil)
-          ))
-        ))
-      )
+      cons(1.into(), cons(2.into(), cons(3.into(), LishpValue::Nil)))
     );
   }
 

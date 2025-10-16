@@ -1,6 +1,7 @@
 use colored::*;
 use rustyline::error::ReadlineError;
-use rustyline::{DefaultEditor, Result as RustyResult};
+use rustyline::history::History;
+use rustyline::{Editor, Helper, Result as RustyResult};
 
 use super::eval::{EvalError, process_input};
 
@@ -29,10 +30,10 @@ impl InputHandler {
     self.buffer.clear();
   }
 
-  pub fn handle_line(
+  pub fn handle_line<H: Helper, I: History>(
     &mut self,
     line: String,
-    editor: &mut DefaultEditor,
+    editor: &mut Editor<H, I>,
   ) -> RustyResult<LineResult> {
     // Add line to buffer
     if !self.buffer.is_empty() {
