@@ -17,3 +17,7 @@ criterion = "0.7.0"
 [[bench]]
 name = "parser_bench"
 harness = false
+
+[[bench]]
+name = "eval_bench"
+harness = false

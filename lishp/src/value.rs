@@ -5,6 +5,7 @@ use ecow::EcoString;
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpecialForm {
   Define,
+  Set,
   If,
   Quote,
   Eval,
@@ -24,6 +25,7 @@ impl FromStr for SpecialForm {
   fn from_str(value: &str) -> Result<Self, Self::Err> {
     match value {
       "def" => Ok(SpecialForm::Define),
+      "set!" => Ok(SpecialForm::Set),
       "if" => Ok(SpecialForm::If),
       "quote" => Ok(SpecialForm::Quote),
       "eval" => Ok(SpecialForm::Eval),
@@ -44,6 +46,7 @@ impl fmt::Display for SpecialForm {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       SpecialForm::Define => write!(f, "def"),
+      SpecialForm::Set => write!(f, "set!"),
       SpecialForm::If => write!(f, "if"),
       SpecialForm::Quote => write!(f, "quote"),
       SpecialForm::Eval => write!(f, "eval"),

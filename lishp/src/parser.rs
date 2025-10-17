@@ -3,23 +3,45 @@ use nom::{
   Err, IResult, Parser,
   branch::alt,
   bytes::complete::{tag, take_while, take_while1},
-  character::complete::{char, digit1, multispace0, one_of},
+  character::complete::{char, digit1, multispace1, one_of},
   combinator::{map, map_res, opt, recognize, value},
   multi::many0,
   sequence::{delimited, preceded},
 };
 use std::rc::Rc;
 
+#[inline]
 fn is_delimiter(c: char) -> bool {
   c.is_whitespace() || c == ')' || c == '(' || c == ';'
 }
 
+#[inline]
+fn with_delimiter_check<'a, O, F>(mut parser: F) -> impl FnMut(&'a str) -> IResult<&'a str, O>
+where
+  F: Parser<&'a str, Output = O, Error = nom::error::Error<&'a str>>,
+{
+  move |i: &'a str| {
+    let (rest, value) = parser.parse(i)?;
+    if let Some(next_char) = rest.chars().next() {
+      if !is_delimiter(next_char) {
+        return Err(nom::Err::Failure(nom::error::Error::new(
+          i,
+          nom::error::ErrorKind::Digit,
+        )));
+      }
+    }
+    Ok((rest, value))
+  }
+}
+
+#[inline]
 fn parse_exponent(i: &str) -> IResult<&str, &str> {
   recognize((one_of("eE"), opt(one_of("+-")), digit1)).parse(i)
 }
 
+#[inline]
 fn parse_scientific(i: &str) -> IResult<&str, LishpValue> {
-  let (rest, value) = map_res(
+  with_delimiter_check(map_res(
     recognize((
       opt(char('-')),
       alt((
@@ -30,67 +52,34 @@ fn parse_scientific(i: &str) -> IResult<&str, LishpValue> {
       parse_exponent,
     )),
     |s: &str| s.parse::<f64>().map(LishpValue::Double),
-  )
-  .parse(i)?;
-
-  if let Some(next_char) = rest.chars().next() {
-    if !is_delimiter(next_char) {
-      return Err(nom::Err::Failure(nom::error::Error::new(
-        i,
-        nom::error::ErrorKind::Digit,
-      )));
-    }
-  }
-
-  Ok((rest, value))
+  ))(i)
 }
 
+#[inline]
 fn parse_float(i: &str) -> IResult<&str, LishpValue> {
-  let (rest, value) = map_res(
+  with_delimiter_check(map_res(
     alt((
       recognize((char('.'), digit1)),
       recognize((opt(char('-')), digit1, char('.'), opt(digit1))),
       recognize((char('-'), char('.'), digit1)),
     )),
     |s: &str| s.parse::<f64>().map(LishpValue::Double),
-  )
-  .parse(i)?;
-
-  if let Some(next_char) = rest.chars().next() {
-    if !is_delimiter(next_char) {
-      return Err(nom::Err::Failure(nom::error::Error::new(
-        i,
-        nom::error::ErrorKind::Digit,
-      )));
-    }
-  }
-
-  Ok((rest, value))
+  ))(i)
 }
 
+#[inline]
 fn parse_integer(i: &str) -> IResult<&str, LishpValue> {
-  let (rest, value) = map_res(recognize((opt(char('-')), digit1)), |s: &str| {
+  with_delimiter_check(map_res(recognize((opt(char('-')), digit1)), |s: &str| {
     s.parse::<i64>().map(LishpValue::Integer)
-  })
-  .parse(i)?;
-
-  // Check that next char is a delimiter - use Failure to prevent backtracking
-  if let Some(next_char) = rest.chars().next() {
-    if !is_delimiter(next_char) {
-      return Err(nom::Err::Failure(nom::error::Error::new(
-        i,
-        nom::error::ErrorKind::Digit,
-      )));
-    }
-  }
-
-  Ok((rest, value))
+  }))(i)
 }
 
+#[inline]
 fn parse_number(i: &str) -> IResult<&str, LishpValue> {
   alt((parse_scientific, parse_float, parse_integer)).parse(i)
 }
 
+#[inline]
 fn is_symbol_char(c: char) -> bool {
   c.is_alphanumeric()
     || c == '-'
@@ -105,6 +94,7 @@ fn is_symbol_char(c: char) -> bool {
     || c == '!'
 }
 
+#[inline]
 fn parse_keyword(keyword: &'static str) -> impl Fn(&str) -> IResult<&str, &str> {
   move |i: &str| {
     let (rest, matched) = tag(keyword)(i)?;
@@ -125,6 +115,10 @@ fn parse_special_form(i: &str) -> IResult<&str, LishpValue> {
     value(
       LishpValue::SpecialForm(SpecialForm::Define),
       parse_keyword("def"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Set),
+      parse_keyword("set!"),
     ),
     value(
       LishpValue::SpecialForm(SpecialForm::If),
@@ -223,37 +217,52 @@ fn parse_binary_predicate(i: &str) -> IResult<&str, LishpValue> {
 }
 
 fn parse_string_content(i: &str) -> IResult<&str, String> {
-  let mut result = String::new();
+  let mut result = String::with_capacity(i.len().min(256));
   let mut input = i;
 
   loop {
-    if let Ok((rest, _)) = char::<_, nom::error::Error<&str>>('\\')(input) {
-      if let Ok((rest, c)) = one_of::<_, _, nom::error::Error<&str>>("\"nrt\\")(rest) {
-        result.push(match c {
-          'n' => '\n',
-          'r' => '\r',
-          't' => '\t',
-          '\\' => '\\',
-          '"' => '"',
-          _ => c,
-        });
-        input = rest;
-        continue;
-      }
+    let special_pos = input.find(|c| c == '\\' || c == '"').unwrap_or(input.len());
+
+    if special_pos > 0 {
+      result.push_str(&input[..special_pos]);
+      input = &input[special_pos..];
     }
 
-    if char::<_, nom::error::Error<&str>>('"')(input).is_ok() {
-      break;
-    }
-
-    if let Some(c) = input.chars().next() {
-      result.push(c);
-      input = &input[c.len_utf8()..];
-    } else {
+    if input.is_empty() {
       return Err(nom::Err::Error(nom::error::Error::new(
         input,
         nom::error::ErrorKind::Eof,
       )));
+    }
+
+    match input.chars().next() {
+      Some('"') => break,
+      Some('\\') => {
+        input = &input[1..];
+        if let Some(c) = input.chars().next() {
+          let ch = match c {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '\\' => '\\',
+            '"' => '"',
+            _ => c,
+          };
+          result.push(ch);
+          input = &input[c.len_utf8()..];
+        } else {
+          return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Eof,
+          )));
+        }
+      }
+      _ => {
+        return Err(nom::Err::Error(nom::error::Error::new(
+          input,
+          nom::error::ErrorKind::Char,
+        )));
+      }
     }
   }
 
@@ -296,22 +305,14 @@ fn parse_symbol(i: &str) -> IResult<&str, LishpValue> {
   .parse(i)
 }
 
+#[inline]
 fn parse_comment(i: &str) -> IResult<&str, ()> {
   value((), preceded(char(';'), take_while(|c| c != '\n'))).parse(i)
 }
 
+#[inline]
 fn skip_ws_and_comments(i: &str) -> IResult<&str, ()> {
-  let (mut input, _) = multispace0(i)?;
-  loop {
-    match parse_comment(input) {
-      Ok((rest, _)) => {
-        let (rest, _) = multispace0(rest)?;
-        input = rest;
-      }
-      Err(_) => break,
-    }
-  }
-  Ok((input, ()))
+  value((), many0(alt((value((), multispace1), parse_comment)))).parse(i)
 }
 
 fn parse_quoted(i: &str) -> IResult<&str, LishpValue> {
@@ -424,6 +425,39 @@ fn check_balanced(input: &str) -> BalanceState {
 }
 
 pub fn parse(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError> {
+  let trimmed = match skip_ws_and_comments(input) {
+    Ok((rest, _)) => rest,
+    Err(_) => input,
+  };
+
+  if trimmed.is_empty() {
+    return Ok(None);
+  }
+
+  match parse_value(trimmed) {
+    Ok((remaining, value)) => Ok(Some((value, remaining))),
+    Err(Err::Error(_)) | Err(Err::Failure(_)) => {
+      let has_quote_error = trimmed.starts_with('\'')
+        || trimmed.contains("')")
+        || trimmed.chars().any(|c| c == '\'') && trimmed.chars().filter(|c| *c == ')').count() > 0;
+
+      let error_msg = if has_quote_error {
+        "Expected valid expression after quote ('), but found nothing or invalid syntax"
+      } else {
+        "Parse error: invalid syntax"
+      };
+
+      Err(ParseError::Error(format!(
+        "{} at position: {}",
+        error_msg,
+        trimmed.get(..20).unwrap_or(trimmed)
+      )))
+    }
+    Err(Err::Incomplete(_)) => Err(ParseError::Incomplete),
+  }
+}
+
+pub fn parse_repl(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError> {
   let trimmed = match skip_ws_and_comments(input) {
     Ok((rest, _)) => rest,
     Err(_) => input,

@@ -1,4 +1,5 @@
 use colored::*;
+use lishp::Environment;
 use rustyline::error::ReadlineError;
 use rustyline::history::History;
 use rustyline::{Editor, Helper, Result as RustyResult};
@@ -8,6 +9,7 @@ use super::eval::{EvalError, process_input};
 pub struct InputHandler {
   buffer: String,
   line_number: usize,
+  env: Environment,
 }
 
 impl InputHandler {
@@ -15,6 +17,7 @@ impl InputHandler {
     Self {
       buffer: String::new(),
       line_number: 1,
+      env: Environment::new(),
     }
   }
 
@@ -30,6 +33,10 @@ impl InputHandler {
     self.buffer.clear();
   }
 
+  pub fn environment_mut(&mut self) -> &mut Environment {
+    &mut self.env
+  }
+
   pub fn handle_line<H: Helper, I: History>(
     &mut self,
     line: String,
@@ -40,7 +47,7 @@ impl InputHandler {
     }
     self.buffer.push_str(&line);
 
-    match process_input(&self.buffer, true) {
+    match process_input(&self.buffer, true, &mut self.env) {
       Ok(result) => {
         editor.add_history_entry(self.buffer.as_str())?;
         self.buffer.clear();

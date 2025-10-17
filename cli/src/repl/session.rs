@@ -179,14 +179,16 @@ impl ReplSession {
     })?;
 
     // Process and evaluate the file contents
-    match process_input(&contents, false) {
+    match process_input(&contents, false, self.input_handler.environment_mut()) {
       Ok(result) => {
         println!(
           "{} Loaded {}",
           "✓".bright_green().bold(),
           path.display().to_string().bright_cyan()
         );
-        println!("{} {}", "=>".bright_green().bold(), result.bright_white());
+        if !result.is_empty() {
+          println!("{} {}", "=>".bright_green().bold(), result.bright_white());
+        }
         Ok(CommandResult::Continue)
       }
       Err(EvalError::Incomplete) => {

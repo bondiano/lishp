@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use thiserror::Error;
 
 use crate::io::IoAdapter;
@@ -50,6 +52,15 @@ pub enum EvalError {
 
   #[error("Parse error: {0}")]
   ParseError(String),
+
+  #[error("Undefined variable: {0}")]
+  UndefinedVariable(String),
+
+  #[error("Cannot define non-symbol")]
+  CannotDefineNonSymbol,
+
+  #[error("Cannot set non-symbol")]
+  CannotSetNonSymbol,
 }
 
 impl From<std::io::Error> for EvalError {
@@ -64,8 +75,39 @@ impl From<crate::parser::ParseError> for EvalError {
   }
 }
 
-/// Extract exactly count elements from a list
-/// Returns error if there are extra or missing elements
+#[derive(Debug, Clone)]
+pub struct Environment {
+  frame: HashMap<String, LishpValue>,
+}
+
+impl Environment {
+  pub fn new() -> Self {
+    Self {
+      frame: HashMap::new(),
+    }
+  }
+
+  pub fn set(&mut self, name: &str, value: LishpValue) {
+    self.frame.insert(name.to_string(), value);
+  }
+
+  /// Get a variable value from the environment
+  /// Returns the value if found, otherwise returns the symbol itself
+  pub fn get(&self, name: &str) -> Option<LishpValue> {
+    self.frame.get(name).cloned()
+  }
+
+  pub fn contains(&self, name: &str) -> bool {
+    self.frame.contains_key(name)
+  }
+}
+
+impl Default for Environment {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
 fn get_elements(mut value: &LishpValue, count: usize) -> Result<Vec<LishpValue>, EvalError> {
   let mut elements = Vec::new();
 
@@ -96,7 +138,6 @@ fn get_elements(mut value: &LishpValue, count: usize) -> Result<Vec<LishpValue>,
   Ok(elements)
 }
 
-/// Convert a value to string representation for string concatenation
 fn repr_to_str(value: &LishpValue) -> String {
   match value {
     LishpValue::String(string) => string.to_string(),
@@ -188,23 +229,39 @@ fn eval_binary_predicate(
   }
 }
 
-/// Check if a value is truthy (anything except false and nil is truthy)
 fn is_truthy(value: &LishpValue) -> bool {
   !matches!(value, LishpValue::Bool(false) | LishpValue::Nil)
 }
 
-/// Evaluator with I/O capabilities
-pub struct Evaluator<'a> {
-  io: &'a mut dyn IoAdapter,
+pub struct Evaluator<'io, 'env> {
+  io: &'io mut dyn IoAdapter,
+  env: &'env mut Environment,
 }
 
-impl<'a> Evaluator<'a> {
-  pub fn new(io: &'a mut dyn IoAdapter) -> Self {
-    Self { io }
+impl<'io, 'env> Evaluator<'io, 'env> {
+  pub fn with_environment(io: &'io mut dyn IoAdapter, env: &'env mut Environment) -> Self {
+    Self { io, env }
+  }
+
+  pub fn environment(&self) -> &Environment {
+    &self.env
+  }
+
+  pub fn environment_mut(&mut self) -> &mut Environment {
+    &mut self.env
+  }
+
+  pub fn into_environment(self) -> &'env mut Environment {
+    self.env
   }
 
   pub fn eval(&mut self, value: &LishpValue) -> Result<LishpValue, EvalError> {
     match value {
+      LishpValue::Symbol(name) => self
+        .env
+        .get(name)
+        .ok_or_else(|| EvalError::UndefinedVariable(name.to_string())),
+
       LishpValue::Cons(_, _) => {
         if matches!(value, LishpValue::Nil) {
           return Err(EvalError::EvalNil);
@@ -393,13 +450,46 @@ impl<'a> Evaluator<'a> {
         }
       }
 
-      SpecialForm::Define => Err(EvalError::TypeError(
-        "Define not yet implemented".to_string(),
-      )),
+      SpecialForm::Symbol => {
+        let arguments = get_elements(tail, 1)?;
+        let value = self.eval(&arguments[0])?;
 
-      SpecialForm::Symbol => Err(EvalError::TypeError(
-        "Symbol not yet implemented".to_string(),
-      )),
+        match value {
+          LishpValue::String(s) => Ok(LishpValue::Symbol(s)),
+          _ => Err(EvalError::TypeError(
+            "symbol expects a string argument".to_string(),
+          )),
+        }
+      }
+
+      SpecialForm::Define => {
+        let arguments = get_elements(tail, 2)?;
+
+        match &arguments[0] {
+          LishpValue::Symbol(name) => {
+            let value = self.eval(&arguments[1])?;
+            self.env.set(name, value);
+            Ok(LishpValue::Nil)
+          }
+          _ => Err(EvalError::CannotDefineNonSymbol),
+        }
+      }
+
+      SpecialForm::Set => {
+        let arguments = get_elements(tail, 2)?;
+
+        match &arguments[0] {
+          LishpValue::Symbol(name) => {
+            if !self.env.contains(name) {
+              return Err(EvalError::UndefinedVariable(name.to_string()));
+            }
+            let value = self.eval(&arguments[1])?;
+            self.env.set(name, value);
+            Ok(LishpValue::Nil)
+          }
+          _ => Err(EvalError::CannotSetNonSymbol),
+        }
+      }
     }
   }
 }
@@ -414,7 +504,8 @@ mod tests {
   fn test_eval_print_with_mock_io() {
     // (print "hello")
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::SpecialForm(SpecialForm::Print),
@@ -431,7 +522,8 @@ mod tests {
   fn test_eval_print_expression() {
     // (print (_+_ 2 3))
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let add_expr = cons(
       LishpValue::BinaryOperator(BinaryOperator::Add),
@@ -455,7 +547,8 @@ mod tests {
   fn test_eval_read_with_mock_io() {
     // (read)
     let mut io = MockIoAdapter::new(vec!["42".to_string()]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(LishpValue::SpecialForm(SpecialForm::Read), LishpValue::Nil);
 
@@ -467,7 +560,8 @@ mod tests {
   fn test_eval_read_string() {
     // (read)
     let mut io = MockIoAdapter::new(vec!["\"hello world\"".to_string()]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(LishpValue::SpecialForm(SpecialForm::Read), LishpValue::Nil);
 
@@ -479,7 +573,8 @@ mod tests {
   fn test_eval_read_and_eval() {
     // (eval (read)) where input is "(_+_ 2 3)"
     let mut io = MockIoAdapter::new(vec!["(_+_ 2 3)".to_string()]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let read_expr = cons(LishpValue::SpecialForm(SpecialForm::Read), LishpValue::Nil);
     let expr = cons(
@@ -495,7 +590,8 @@ mod tests {
   fn test_eval_do_with_print() {
     // (do (print "first") (print "second") 42)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let print1 = cons(
       LishpValue::SpecialForm(SpecialForm::Print),
@@ -523,7 +619,8 @@ mod tests {
   fn test_eval_predicate_equals_true() {
     // (_==_ 5 5) = true
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::Equals),
@@ -541,7 +638,8 @@ mod tests {
   fn test_eval_predicate_equals_false() {
     // (_==_ 5 10) = false
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::Equals),
@@ -559,7 +657,8 @@ mod tests {
   fn test_eval_predicate_less_than_true() {
     // (_<_ 3 5) = true
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
@@ -577,7 +676,8 @@ mod tests {
   fn test_eval_predicate_less_than_false() {
     // (_<_ 10 5) = false
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
@@ -595,7 +695,8 @@ mod tests {
   fn test_eval_predicate_greater_than_true() {
     // (_>_ 10 5) = true
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::GreaterThan),
@@ -613,7 +714,8 @@ mod tests {
   fn test_eval_predicate_greater_than_false() {
     // (_>_ 3 5) = false
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::GreaterThan),
@@ -631,7 +733,8 @@ mod tests {
   fn test_eval_predicate_with_doubles() {
     // (_<_ 3.14 5.0) = true
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
@@ -649,7 +752,8 @@ mod tests {
   fn test_eval_predicate_in_if() {
     // (if (_<_ 3 5) "yes" "no") = "yes"
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let condition = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
@@ -678,7 +782,8 @@ mod tests {
   fn test_eval_predicate_equals_different_types() {
     // (_==_ 5 "5") = false
     let mut io = MockIoAdapter::new(vec![]);
-    let mut evaluator = Evaluator::new(&mut io);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::Equals),
@@ -690,5 +795,169 @@ mod tests {
 
     let result = evaluator.eval(&expr).unwrap();
     assert_eq!(result, LishpValue::Bool(false));
+  }
+
+  #[test]
+  fn test_eval_define() {
+    // (def x 42)
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    let expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol("x".into()),
+        cons(LishpValue::Integer(42), LishpValue::Nil),
+      ),
+    );
+
+    let result = evaluator.eval(&expr).unwrap();
+    assert_eq!(result, LishpValue::Nil);
+
+    // Now x should be defined
+    let x_value = evaluator.eval(&LishpValue::Symbol("x".into())).unwrap();
+    assert_eq!(x_value, LishpValue::Integer(42));
+  }
+
+  #[test]
+  fn test_eval_define_expression() {
+    // (def x (_+_ 2 3))
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    let add_expr = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Integer(2),
+        cons(LishpValue::Integer(3), LishpValue::Nil),
+      ),
+    );
+
+    let expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol("x".into()),
+        cons(add_expr, LishpValue::Nil),
+      ),
+    );
+
+    evaluator.eval(&expr).unwrap();
+
+    // x should equal 5
+    let x_value = evaluator.eval(&LishpValue::Symbol("x".into())).unwrap();
+    assert_eq!(x_value, LishpValue::Integer(5));
+  }
+
+  #[test]
+  fn test_eval_set() {
+    // (def x 10) (set! x 20)
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Define x = 10
+    let def_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol("x".into()),
+        cons(LishpValue::Integer(10), LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_expr).unwrap();
+
+    // Set x = 20
+    let set_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Set),
+      cons(
+        LishpValue::Symbol("x".into()),
+        cons(LishpValue::Integer(20), LishpValue::Nil),
+      ),
+    );
+    let result = evaluator.eval(&set_expr).unwrap();
+    assert_eq!(result, LishpValue::Nil);
+
+    // x should now equal 20
+    let x_value = evaluator.eval(&LishpValue::Symbol("x".into())).unwrap();
+    assert_eq!(x_value, LishpValue::Integer(20));
+  }
+
+  #[test]
+  fn test_eval_set_undefined_variable() {
+    // (set! x 20) - should fail because x is not defined
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    let set_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Set),
+      cons(
+        LishpValue::Symbol("x".into()),
+        cons(LishpValue::Integer(20), LishpValue::Nil),
+      ),
+    );
+
+    let result = evaluator.eval(&set_expr);
+    assert!(result.is_err());
+    assert!(matches!(result, Err(EvalError::UndefinedVariable(_))));
+  }
+
+  #[test]
+  fn test_eval_symbol_form() {
+    // (symbol "x") = x
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    let expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Symbol),
+      cons(LishpValue::String("x".into()), LishpValue::Nil),
+    );
+
+    let result = evaluator.eval(&expr).unwrap();
+    assert_eq!(result, LishpValue::Symbol("x".into()));
+  }
+
+  #[test]
+  fn test_eval_undefined_symbol() {
+    // x - should fail because x is not defined
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    let result = evaluator.eval(&LishpValue::Symbol("x".into()));
+    assert!(result.is_err());
+    assert!(matches!(result, Err(EvalError::UndefinedVariable(_))));
+  }
+
+  #[test]
+  fn test_eval_variable_in_expression() {
+    // (def x 5) (_+_ x 3) = 8
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Define x = 5
+    let def_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol("x".into()),
+        cons(LishpValue::Integer(5), LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_expr).unwrap();
+
+    // (_+_ x 3)
+    let add_expr = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Symbol("x".into()),
+        cons(LishpValue::Integer(3), LishpValue::Nil),
+      ),
+    );
+
+    let result = evaluator.eval(&add_expr).unwrap();
+    assert_eq!(result, LishpValue::Integer(8));
   }
 }

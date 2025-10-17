@@ -1,4 +1,4 @@
-use lishp::{Evaluator, IoAdapter, ParseError, StdioAdapter, parser};
+use lishp::{ParseError, StdioAdapter, parser};
 
 #[derive(Debug)]
 pub enum EvalError {
@@ -12,24 +12,21 @@ impl From<lishp::EvalError> for EvalError {
   }
 }
 
-pub fn process_input(input: &str, interactive_mode: bool) -> Result<String, EvalError> {
-  process_input_with_io(input, interactive_mode, &mut StdioAdapter::new())
-}
-
-pub fn process_input_with_io(
+pub fn process_input(
   input: &str,
   interactive_mode: bool,
-  io: &mut dyn IoAdapter,
+  env: &mut lishp::Environment,
 ) -> Result<String, EvalError> {
   let mut remaining = input;
   let mut last_result = None;
   let mut results = Vec::new();
-  let mut evaluator = Evaluator::new(io);
+  let mut io = StdioAdapter::new();
+
+  let mut evaluator = lishp::Evaluator::with_environment(&mut io, env);
 
   loop {
-    match parser::parse(remaining) {
+    match parser::parse_repl(remaining) {
       Ok(Some((value, rest))) => {
-        // Evaluate the parsed value
         let evaluated = evaluator.eval(&value)?;
         let result = format!("{}", evaluated);
 

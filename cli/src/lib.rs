@@ -1,7 +1,7 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use lishp::parser;
+use lishp::{Evaluator, StdioAdapter, parser};
 
 use crate::repl::ReplSession;
 
@@ -37,12 +37,17 @@ pub fn run_repl() -> Result<(), String> {
 pub fn evaluate_expression(input: &str) -> Result<String, String> {
   let mut remaining = input;
   let mut results = Vec::new();
+  let mut io = StdioAdapter::new();
+  let mut env = lishp::Environment::new();
+  let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
   loop {
     match parser::parse(remaining) {
       Ok(Some((value, rest))) => {
-        // TODO: Evaluate the parsed value
-        let result = format!("{}", value);
+        let evaluated = evaluator
+          .eval(&value)
+          .map_err(|e| format!("Evaluation error: {}", e))?;
+        let result = format!("{}", evaluated);
         results.push(result);
         remaining = rest;
 
@@ -74,17 +79,10 @@ pub fn run_file(path: &str) -> Result<(), String> {
 }
 
 pub fn run_files(paths: &[String]) -> Result<(), String> {
-  let mut last_result = None;
-
   for path in paths {
     let contents = std::fs::read_to_string(path)
       .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
-    let result = evaluate_expression(&contents)?;
-    last_result = Some(result);
-  }
-
-  if let Some(result) = last_result {
-    println!("{}", result);
+    evaluate_expression(&contents)?;
   }
 
   Ok(())
