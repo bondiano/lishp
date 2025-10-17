@@ -272,8 +272,8 @@ macro_rules! lishp_list {
     };
     [$($elem:expr),* $(,)?] => {{
         let mut result = LishpValue::Nil;
-        let elems = vec![$(<LishpValue as From<_>>::from($elem)),*];
-        for elem in elems.into_iter().rev() {
+        let elements = vec![$(<LishpValue as From<_>>::from($elem)),*];
+        for elem in elements.into_iter().rev() {
             result = cons(elem, result);
         }
         result

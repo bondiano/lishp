@@ -1,9 +1,15 @@
-use lishp::{ParseError, parser};
+use lishp::{eval, ParseError, parser};
 
 #[derive(Debug)]
 pub enum EvalError {
   Incomplete,
   Error(String),
+}
+
+impl From<lishp::EvalError> for EvalError {
+  fn from(err: lishp::EvalError) -> Self {
+    EvalError::Error(err.to_string())
+  }
 }
 
 pub fn process_input(input: &str, interactive_mode: bool) -> Result<String, EvalError> {
@@ -14,8 +20,9 @@ pub fn process_input(input: &str, interactive_mode: bool) -> Result<String, Eval
   loop {
     match parser::parse(remaining) {
       Ok(Some((value, rest))) => {
-        // TODO: Evaluate the parsed value
-        let result = format!("{}", value);
+        // Evaluate the parsed value
+        let evaluated = eval(&value)?;
+        let result = format!("{}", evaluated);
 
         if interactive_mode {
           results.push(result.clone());
