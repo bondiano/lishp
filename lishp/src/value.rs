@@ -17,6 +17,7 @@ pub enum SpecialForm {
   Read,
   Print,
   Symbol,
+  Load,
 }
 
 impl FromStr for SpecialForm {
@@ -37,6 +38,7 @@ impl FromStr for SpecialForm {
       "read" => Ok(SpecialForm::Read),
       "print" => Ok(SpecialForm::Print),
       "symbol" => Ok(SpecialForm::Symbol),
+      "load" => Ok(SpecialForm::Load),
       _ => Err(format!("Invalid special form: {}", value)),
     }
   }
@@ -58,6 +60,7 @@ impl fmt::Display for SpecialForm {
       SpecialForm::Read => write!(f, "read"),
       SpecialForm::Print => write!(f, "print"),
       SpecialForm::Symbol => write!(f, "symbol"),
+      SpecialForm::Load => write!(f, "load"),
     }
   }
 }
@@ -264,7 +267,7 @@ pub struct Symbol(pub EcoString);
 
 impl From<Symbol> for LishpValue {
   fn from(value: Symbol) -> Self {
-    LishpValue::Symbol(value.0.into())
+    LishpValue::Symbol(value.0)
   }
 }
 

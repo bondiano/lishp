@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::{self, BufRead, Write};
 
 /// Trait for abstracting input/output operations
@@ -14,6 +15,9 @@ pub trait IoAdapter {
     self.print(text)?;
     self.print("\n")
   }
+
+  /// Read contents of a file
+  fn read_file(&self, path: &str) -> io::Result<String>;
 }
 
 pub struct StdioAdapter {
@@ -47,6 +51,10 @@ impl IoAdapter for StdioAdapter {
   fn print(&mut self, text: &str) -> io::Result<()> {
     write!(self.stdout, "{}", text)?;
     self.stdout.flush()
+  }
+
+  fn read_file(&self, path: &str) -> io::Result<String> {
+    fs::read_to_string(path)
   }
 }
 
@@ -87,6 +95,13 @@ impl IoAdapter for MockIoAdapter {
   fn print(&mut self, text: &str) -> io::Result<()> {
     self.output.push(text.to_string());
     Ok(())
+  }
+
+  fn read_file(&self, _path: &str) -> io::Result<String> {
+    Err(io::Error::new(
+      io::ErrorKind::Unsupported,
+      "File operations not supported in MockIoAdapter",
+    ))
   }
 }
 
@@ -147,6 +162,13 @@ impl IoAdapter for StringIoAdapter {
   fn print(&mut self, text: &str) -> io::Result<()> {
     self.output.push_str(text);
     Ok(())
+  }
+
+  fn read_file(&self, _path: &str) -> io::Result<String> {
+    Err(io::Error::new(
+      io::ErrorKind::Unsupported,
+      "File operations not supported in StringIoAdapter",
+    ))
   }
 }
 

@@ -146,10 +146,7 @@ impl ReplSession {
       return Ok(CommandResult::Continue);
     }
 
-    // Convert to PathBuf for better path handling
     let path = PathBuf::from(file);
-
-    // Check if file exists
     if !path.exists() {
       eprintln!(
         "{} File not found: {}",
@@ -159,7 +156,6 @@ impl ReplSession {
       return Ok(CommandResult::Continue);
     }
 
-    // Check if path is a file (not a directory)
     if !path.is_file() {
       eprintln!(
         "{} Path is not a file: {}",
@@ -169,14 +165,8 @@ impl ReplSession {
       return Ok(CommandResult::Continue);
     }
 
-    // Read file contents
-    let contents = std::fs::read_to_string(&path).map_err(|e| {
-      format!(
-        "Failed to read file '{}': {}",
-        path.display(),
-        e
-      )
-    })?;
+    let contents = std::fs::read_to_string(&path)
+      .map_err(|e| format!("Failed to read file '{}': {}", path.display(), e))?;
 
     // Process and evaluate the file contents
     match process_input(&contents, false, self.input_handler.environment_mut()) {
@@ -257,16 +247,19 @@ fn print_help() {
   println!("{}", separator);
 
   println!("\n  {}", "Commands".bright_yellow().bold());
-  println!("    {:12} {}", ":help".bright_green(), "Show this help");
-  println!("    {:12} {}", ":quit".bright_green(), "Exit the REPL");
-  println!("    {:12} {}", ":history".bright_green(), "Show history");
-  println!("    {:12} {}", ":l <file>".bright_green(), "Load and evaluate a file");
+  println!("    {:12} Show this help", ":help".bright_green());
+  println!("    {:12} Exit the REPL", ":quit".bright_green());
+  println!("    {:12} Show history", ":history".bright_green());
+  println!(
+    "    {:12} Load and evaluate a file",
+    ":l <file>".bright_green()
+  );
 
   println!("\n  {}", "Navigation".bright_yellow().bold());
-  println!("    {:12} {}", "↑/↓".bright_magenta(), "Browse history");
-  println!("    {:12} {}", "Ctrl+R".bright_magenta(), "Search history");
-  println!("    {:12} {}", "Ctrl+C".bright_magenta(), "Interrupt");
-  println!("    {:12} {}", "Ctrl+D".bright_magenta(), "Exit");
+  println!("    {:12} Browse history", "↑/↓".bright_magenta());
+  println!("    {:12} Search history", "Ctrl+R".bright_magenta());
+  println!("    {:12} Interrupt", "Ctrl+C".bright_magenta());
+  println!("    {:12} Exit", "Ctrl+D".bright_magenta());
 
   println!("\n{}\n", separator);
 }

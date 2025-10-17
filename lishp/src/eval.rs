@@ -244,11 +244,11 @@ impl<'io, 'env> Evaluator<'io, 'env> {
   }
 
   pub fn environment(&self) -> &Environment {
-    &self.env
+    self.env
   }
 
   pub fn environment_mut(&mut self) -> &mut Environment {
-    &mut self.env
+    self.env
   }
 
   pub fn into_environment(self) -> &'env mut Environment {
@@ -396,12 +396,12 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           None
         };
 
-        let condition = self.eval(&condition_value)?;
+        let condition = self.eval(condition_value)?;
 
         if is_truthy(&condition) {
-          self.eval(&then_value)
+          self.eval(then_value)
         } else if let Some(else_val) = else_value {
-          self.eval(&else_val)
+          self.eval(else_val)
         } else {
           Ok(LishpValue::Nil)
         }
@@ -489,6 +489,40 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           }
           _ => Err(EvalError::CannotSetNonSymbol),
         }
+      }
+
+      SpecialForm::Load => {
+        let arguments = get_elements(tail, 1)?;
+        let path_value = self.eval(&arguments[0])?;
+
+        let path = match path_value {
+          LishpValue::String(s) => s.to_string(),
+          _ => {
+            return Err(EvalError::TypeError(
+              "load expects a string path argument".to_string(),
+            ));
+          }
+        };
+
+        // Read file contents
+        let contents = self.io.read_file(&path)?;
+
+        // Parse all expressions from the file
+        let mut remaining = contents.as_str();
+        let mut last_result = LishpValue::Nil;
+
+        while !remaining.trim().is_empty() {
+          match parser::parse(remaining) {
+            Ok(Some((value, rest))) => {
+              last_result = self.eval(&value)?;
+              remaining = rest;
+            }
+            Ok(None) => break,
+            Err(e) => return Err(e.into()),
+          }
+        }
+
+        Ok(last_result)
       }
     }
   }
@@ -731,7 +765,7 @@ mod tests {
 
   #[test]
   fn test_eval_predicate_with_doubles() {
-    // (_<_ 3.14 5.0) = true
+    // (_<_ 3.5 5.0) = true
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
@@ -739,7 +773,7 @@ mod tests {
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
       cons(
-        LishpValue::Double(3.14),
+        LishpValue::Double(3.5),
         cons(LishpValue::Double(5.0), LishpValue::Nil),
       ),
     );

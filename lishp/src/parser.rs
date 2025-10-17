@@ -22,13 +22,13 @@ where
 {
   move |i: &'a str| {
     let (rest, value) = parser.parse(i)?;
-    if let Some(next_char) = rest.chars().next() {
-      if !is_delimiter(next_char) {
-        return Err(nom::Err::Failure(nom::error::Error::new(
-          i,
-          nom::error::ErrorKind::Digit,
-        )));
-      }
+    if let Some(next_char) = rest.chars().next()
+      && !is_delimiter(next_char)
+    {
+      return Err(nom::Err::Failure(nom::error::Error::new(
+        i,
+        nom::error::ErrorKind::Digit,
+      )));
     }
     Ok((rest, value))
   }
@@ -98,13 +98,13 @@ fn is_symbol_char(c: char) -> bool {
 fn parse_keyword(keyword: &'static str) -> impl Fn(&str) -> IResult<&str, &str> {
   move |i: &str| {
     let (rest, matched) = tag(keyword)(i)?;
-    if let Some(next_char) = rest.chars().next() {
-      if is_symbol_char(next_char) {
-        return Err(nom::Err::Error(nom::error::Error::new(
-          i,
-          nom::error::ErrorKind::Tag,
-        )));
-      }
+    if let Some(next_char) = rest.chars().next()
+      && is_symbol_char(next_char)
+    {
+      return Err(nom::Err::Error(nom::error::Error::new(
+        i,
+        nom::error::ErrorKind::Tag,
+      )));
     }
     Ok((rest, matched))
   }
@@ -164,6 +164,10 @@ fn parse_special_form(i: &str) -> IResult<&str, LishpValue> {
       LishpValue::SpecialForm(SpecialForm::Symbol),
       parse_keyword("symbol"),
     ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Load),
+      parse_keyword("load"),
+    ),
   ))
   .parse(i)
 }
@@ -221,7 +225,7 @@ fn parse_string_content(i: &str) -> IResult<&str, String> {
   let mut input = i;
 
   loop {
-    let special_pos = input.find(|c| c == '\\' || c == '"').unwrap_or(input.len());
+    let special_pos = input.find(['\\', '"']).unwrap_or(input.len());
 
     if special_pos > 0 {
       result.push_str(&input[..special_pos]);
@@ -290,13 +294,13 @@ fn parse_nil(i: &str) -> IResult<&str, LishpValue> {
 }
 
 fn parse_symbol(i: &str) -> IResult<&str, LishpValue> {
-  if let Some(first_char) = i.chars().next() {
-    if first_char.is_ascii_digit() {
-      return Err(nom::Err::Error(nom::error::Error::new(
-        i,
-        nom::error::ErrorKind::Alpha,
-      )));
-    }
+  if let Some(first_char) = i.chars().next()
+    && first_char.is_ascii_digit()
+  {
+    return Err(nom::Err::Error(nom::error::Error::new(
+      i,
+      nom::error::ErrorKind::Alpha,
+    )));
   }
 
   map(take_while1(is_symbol_char), |s: &str| {
@@ -370,7 +374,7 @@ fn parse_list(i: &str) -> IResult<&str, LishpValue> {
       many0(preceded(skip_ws_and_comments, parse_value)),
       preceded(skip_ws_and_comments, char(')')),
     ),
-    |values| crate::value::list(values),
+    crate::value::list,
   )
   .parse(i)
 }
@@ -432,6 +436,12 @@ pub fn parse(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError> {
 
   if trimmed.is_empty() {
     return Ok(None);
+  }
+
+  match check_balanced(trimmed) {
+    BalanceState::Incomplete => return Err(ParseError::Incomplete),
+    BalanceState::UnmatchedClosing => return Err(ParseError::UnmatchedClosing),
+    BalanceState::Balanced => {}
   }
 
   match parse_value(trimmed) {
