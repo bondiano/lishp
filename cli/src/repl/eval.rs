@@ -1,4 +1,4 @@
-use lishp::{eval, ParseError, parser};
+use lishp::{Evaluator, IoAdapter, ParseError, StdioAdapter, parser};
 
 #[derive(Debug)]
 pub enum EvalError {
@@ -13,15 +13,24 @@ impl From<lishp::EvalError> for EvalError {
 }
 
 pub fn process_input(input: &str, interactive_mode: bool) -> Result<String, EvalError> {
+  process_input_with_io(input, interactive_mode, &mut StdioAdapter::new())
+}
+
+pub fn process_input_with_io(
+  input: &str,
+  interactive_mode: bool,
+  io: &mut dyn IoAdapter,
+) -> Result<String, EvalError> {
   let mut remaining = input;
   let mut last_result = None;
   let mut results = Vec::new();
+  let mut evaluator = Evaluator::new(io);
 
   loop {
     match parser::parse(remaining) {
       Ok(Some((value, rest))) => {
         // Evaluate the parsed value
-        let evaluated = eval(&value)?;
+        let evaluated = evaluator.eval(&value)?;
         let result = format!("{}", evaluated);
 
         if interactive_mode {
@@ -47,7 +56,9 @@ pub fn process_input(input: &str, interactive_mode: bool) -> Result<String, Eval
         return Err(EvalError::Incomplete);
       }
       Err(ParseError::UnmatchedClosing) => {
-        return Err(EvalError::Error("Unexpected closing parenthesis ')'".to_string()));
+        return Err(EvalError::Error(
+          "Unexpected closing parenthesis ')'".to_string(),
+        ));
       }
       Err(ParseError::Error(e)) => {
         return Err(EvalError::Error(e));

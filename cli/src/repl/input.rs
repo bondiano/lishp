@@ -35,13 +35,11 @@ impl InputHandler {
     line: String,
     editor: &mut Editor<H, I>,
   ) -> RustyResult<LineResult> {
-    // Add line to buffer
     if !self.buffer.is_empty() {
       self.buffer.push('\n');
     }
     self.buffer.push_str(&line);
 
-    // Try to evaluate
     match process_input(&self.buffer, true) {
       Ok(result) => {
         editor.add_history_entry(self.buffer.as_str())?;
