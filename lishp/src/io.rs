@@ -179,29 +179,36 @@ mod tests {
   #[test]
   fn test_string_io_adapter_basic() {
     let mut adapter = StringIoAdapter::new(vec!["test".to_string()]);
-    adapter.print("Hello").unwrap();
-    adapter.println("World").unwrap();
+    adapter.print("Hello").expect("Failed to print Hello");
+    adapter.println("World").expect("Failed to print World");
 
     assert_eq!(adapter.output(), "HelloWorld\n");
-    assert_eq!(adapter.read_line().unwrap(), "test");
+    assert_eq!(adapter.read_line().expect("Failed to read line"), "test");
   }
 
   #[test]
   fn test_string_io_adapter_take_output() {
     let mut adapter = StringIoAdapter::output_only();
-    adapter.println("First").unwrap();
+    adapter
+      .println("First")
+      .expect("Failed to print first line");
     let output = adapter.take_output();
     assert_eq!(output, "First\n");
     assert_eq!(adapter.output(), "");
 
-    adapter.println("Second").unwrap();
+    adapter
+      .println("Second")
+      .expect("Failed to print second line");
     assert_eq!(adapter.output(), "Second\n");
   }
 
   #[test]
   fn test_string_io_adapter_with_input() {
     let mut adapter = StringIoAdapter::with_input("(+ 1 2)".to_string());
-    assert_eq!(adapter.read_line().unwrap(), "(+ 1 2)");
+    assert_eq!(
+      adapter.read_line().expect("Failed to read first line"),
+      "(+ 1 2)"
+    );
 
     let result = adapter.read_line();
     assert!(result.is_err());

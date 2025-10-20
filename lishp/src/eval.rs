@@ -35,6 +35,9 @@ pub enum EvalError {
   #[error("Wrong head form: expected special form, binary operator, or binary predicate")]
   WrongHeadForm,
 
+  #[error("Division by zero")]
+  DivisionByZero,
+
   #[error("Expected list, got: {0}")]
   ExpectedList(String),
 
@@ -178,15 +181,32 @@ fn eval_binary_operator(
       }
       _ => Err(EvalError::InvalidBinaryOperator(operator)),
     },
-    BinaryOperator::Divide => match (left, right) {
-      (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
-        Ok(LishpValue::Integer(left_val / right_val))
+    BinaryOperator::Divide => {
+      if matches!(right, LishpValue::Integer(0) | LishpValue::Double(0.0)) {
+        return Err(EvalError::DivisionByZero);
       }
-      (LishpValue::Double(left_val), LishpValue::Double(right_val)) => {
-        Ok(LishpValue::Double(left_val / right_val))
+
+      match (left, right) {
+        (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
+          let result = left_val as f64 / right_val as f64;
+          if result.fract() == 0.0 {
+            Ok(LishpValue::Integer(result.trunc() as i64))
+          } else {
+            Ok(LishpValue::Double(result))
+          }
+        }
+        (LishpValue::Double(left_val), LishpValue::Double(right_val)) => {
+          Ok(LishpValue::Double(left_val / right_val))
+        }
+        (LishpValue::Integer(left_val), LishpValue::Double(right_val)) => {
+          Ok(LishpValue::Double(left_val as f64 / right_val))
+        }
+        (LishpValue::Double(left_val), LishpValue::Integer(right_val)) => {
+          Ok(LishpValue::Double(left_val / right_val as f64))
+        }
+        _ => Err(EvalError::InvalidBinaryOperator(operator)),
       }
-      _ => Err(EvalError::InvalidBinaryOperator(operator)),
-    },
+    }
     BinaryOperator::Modulo => match (left, right) {
       (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
         Ok(LishpValue::Integer(left_val % right_val))

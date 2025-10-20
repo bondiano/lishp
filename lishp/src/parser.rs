@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 #[inline]
 fn is_delimiter(c: char) -> bool {
-  c.is_whitespace() || c == ')' || c == '(' || c == ';'
+  c.is_whitespace() || c == ')' || c == '(' || c == ';' || c == ','
 }
 
 #[inline]
@@ -316,7 +316,15 @@ fn parse_comment(i: &str) -> IResult<&str, ()> {
 
 #[inline]
 fn skip_ws_and_comments(i: &str) -> IResult<&str, ()> {
-  value((), many0(alt((value((), multispace1), parse_comment)))).parse(i)
+  value(
+    (),
+    many0(alt((
+      value((), multispace1),
+      parse_comment,
+      value((), char(',')),
+    ))),
+  )
+  .parse(i)
 }
 
 fn parse_quoted(i: &str) -> IResult<&str, LishpValue> {
@@ -913,6 +921,54 @@ mod tests {
     assert_eq!(
       parse("42\t").expect("Failed to parse '42\\t'"),
       Some((LishpValue::Integer(42), "\t"))
+    );
+  }
+
+  #[test]
+  fn test_parse_comma_as_delimiter() {
+    // Test comma between numbers
+    assert_eq!(
+      parse("(1,2,3)").expect("Failed to parse '(1,2,3)'"),
+      Some((lishp_list![1, 2, 3], ""))
+    );
+
+    // Test comma with spaces
+    assert_eq!(
+      parse("(1, 2, 3)").expect("Failed to parse '(1, 2, 3)'"),
+      Some((lishp_list![1, 2, 3], ""))
+    );
+
+    // Test comma in quoted list
+    assert_eq!(
+      parse("'(1,2,3)").expect("Failed to parse ''(1,2,3)'"),
+      Some((
+        LishpValue::Cons(
+          Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
+          Rc::new(LishpValue::Cons(
+            Rc::new(lishp_list![1, 2, 3]),
+            Rc::new(LishpValue::Nil)
+          ))
+        ),
+        ""
+      ))
+    );
+
+    // Test comma with mixed types
+    assert_eq!(
+      parse("(\"hello\",42,true)").expect("Failed to parse '(\"hello\",42,true)'"),
+      Some((lishp_list!["hello", 42, true], ""))
+    );
+
+    // Test multiple commas
+    assert_eq!(
+      parse("(1,,2)").expect("Failed to parse '(1,,2)'"),
+      Some((lishp_list![1, 2], ""))
+    );
+
+    // Test trailing comma
+    assert_eq!(
+      parse("(1,2,)").expect("Failed to parse '(1,2,)'"),
+      Some((lishp_list![1, 2], ""))
     );
   }
 }
