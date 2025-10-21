@@ -1,5 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use ecow::EcoString;
 use thiserror::Error;
 
 use crate::io::IoAdapter;
@@ -10,6 +13,9 @@ use crate::value::{
 
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum EvalError {
+  #[error("Cannot set undefined variable: {0}")]
+  CannotSetUndefinedVariable(String),
+
   #[error("Invalid binary operator: {0}")]
   InvalidBinaryOperator(BinaryOperator),
 
@@ -64,6 +70,9 @@ pub enum EvalError {
 
   #[error("Cannot set non-symbol")]
   CannotSetNonSymbol,
+
+  #[error("Unsupported feature: {0}")]
+  UnsupportedFeature(String),
 }
 
 impl From<std::io::Error> for EvalError {
@@ -80,24 +89,58 @@ impl From<crate::parser::ParseError> for EvalError {
 
 #[derive(Debug, Clone)]
 pub struct Environment {
-  frame: HashMap<String, LishpValue>,
+  frame: HashMap<EcoString, LishpValue>,
+  parent: Option<Rc<RefCell<Environment>>>,
 }
 
 impl Environment {
   pub fn new() -> Self {
     Self {
       frame: HashMap::new(),
+      parent: None,
     }
   }
 
-  pub fn set(&mut self, name: &str, value: LishpValue) {
-    self.frame.insert(name.to_string(), value);
+  pub fn define(&mut self, name: &str, value: LishpValue) {
+    self.frame.insert(name.into(), value);
   }
 
-  /// Get a variable value from the environment
-  /// Returns the value if found, otherwise returns the symbol itself
+  pub fn set(&mut self, name: &str, value: LishpValue) -> Result<(), EvalError> {
+    if self.frame.contains_key(name) {
+      self.frame.insert(name.into(), value);
+      return Ok(());
+    }
+
+    let mut current_parent = self.parent.clone();
+
+    while let Some(parent_rc) = current_parent {
+      let mut parent = parent_rc.borrow_mut();
+      if parent.frame.contains_key(name) {
+        parent.frame.insert(name.into(), value);
+        return Ok(());
+      }
+      current_parent = parent.parent.clone();
+    }
+
+    Err(EvalError::CannotSetUndefinedVariable(name.to_string()))
+  }
+
   pub fn get(&self, name: &str) -> Option<LishpValue> {
-    self.frame.get(name).cloned()
+    if let Some(value) = self.frame.get(name) {
+      return Some(value.clone());
+    }
+
+    let mut current_parent = self.parent.clone();
+
+    while let Some(parent_rc) = current_parent {
+      let parent = parent_rc.borrow();
+      if let Some(value) = parent.frame.get(name) {
+        return Some(value.clone());
+      }
+      current_parent = parent.parent.clone();
+    }
+
+    None
   }
 
   pub fn contains(&self, name: &str) -> bool {
@@ -277,7 +320,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
   pub fn eval(&mut self, value: &LishpValue) -> Result<LishpValue, EvalError> {
     match value {
-      LishpValue::Symbol(name) => self
+      LishpValue::Symbol { name } => self
         .env
         .get(name)
         .ok_or_else(|| EvalError::UndefinedVariable(name.to_string())),
@@ -309,6 +352,59 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
           LishpValue::SpecialForm(form) => self.eval_special_form(form, tail),
 
+          LishpValue::Lambda {
+            arguments,
+            body,
+            environment,
+          } => {
+            let mut lambda_env = environment.borrow().clone();
+            let param_count = arguments.len();
+            let mut current_tail = tail;
+
+            for (idx, param_name) in arguments.iter().enumerate() {
+              let is_last_param = idx == param_count - 1;
+
+              if matches!(current_tail, LishpValue::Nil) {
+                let remaining_args = arguments[idx..].to_vec();
+
+                return Ok(LishpValue::Lambda {
+                  arguments: remaining_args,
+                  body: body.clone(),
+                  environment: Rc::new(RefCell::new(lambda_env)),
+                });
+              }
+
+              let arg_value = car(current_tail).unwrap(); // safe: Nil checked above
+              let next_tail = cdr(current_tail).unwrap_or(&LishpValue::Nil);
+
+              if is_last_param && !matches!(next_tail, LishpValue::Nil) {
+                let mut rest_args = Vec::new();
+                let mut rest_tail = current_tail;
+
+                while !matches!(rest_tail, LishpValue::Nil) {
+                  if let Some(arg_val) = car(rest_tail) {
+                    rest_args.push(self.eval(arg_val)?);
+                  }
+                  rest_tail = cdr(rest_tail).unwrap_or(&LishpValue::Nil);
+                }
+
+                let rest_list = rest_args
+                  .into_iter()
+                  .rev()
+                  .fold(LishpValue::Nil, |acc, item| cons(item, acc));
+
+                lambda_env.define(param_name, rest_list);
+              } else {
+                let evaluated_arg = self.eval(arg_value)?;
+                lambda_env.define(param_name, evaluated_arg);
+                current_tail = next_tail;
+              }
+            }
+
+            let mut lambda_evaluator = Evaluator::with_environment(self.io, &mut lambda_env);
+            lambda_evaluator.eval(&body)
+          }
+
           _ => Err(EvalError::WrongHeadForm),
         }
       }
@@ -323,6 +419,50 @@ impl<'io, 'env> Evaluator<'io, 'env> {
     tail: &LishpValue,
   ) -> Result<LishpValue, EvalError> {
     match form {
+      SpecialForm::Lambda => {
+        let elements = get_elements(tail, 2)?;
+        let args_list = &elements[0];
+        let body = &elements[1];
+
+        if !is_list(args_list) {
+          return Err(EvalError::TypeError(format!(
+            "lambda expects a list of arguments, got: {}",
+            args_list
+          )));
+        }
+
+        let mut arguments = Vec::new();
+        let mut current = args_list;
+        while !matches!(current, LishpValue::Nil) {
+          if let Some(head) = car(current) {
+            match head {
+              LishpValue::Symbol { name } => arguments.push(name.clone()),
+              _ => {
+                return Err(EvalError::TypeError(format!(
+                  "lambda argument must be a symbol, got: {}",
+                  head
+                )));
+              }
+            }
+            if let Some(tail) = cdr(current) {
+              current = tail;
+            } else {
+              break;
+            }
+          } else {
+            break;
+          }
+        }
+
+        let environment = self.env.clone();
+
+        Ok(LishpValue::Lambda {
+          arguments,
+          body: Rc::new(body.clone()),
+          environment: Rc::new(RefCell::new(environment)),
+        })
+      }
+
       SpecialForm::Quote => {
         let arguments = get_elements(tail, 1)?;
         Ok(arguments[0].clone())
@@ -378,13 +518,12 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           LishpValue::Integer(_) => "integer",
           LishpValue::Double(_) => "double",
           LishpValue::String(_) => "string",
-          LishpValue::Symbol(_) => "symbol",
           LishpValue::Bool(_) => "bool",
           LishpValue::Nil => "nil",
           LishpValue::Cons(_, _) => "cons",
           LishpValue::SpecialForm(_) => "special-form",
-          LishpValue::BinaryOperator(_) => "binary-operator",
-          LishpValue::BinaryPredicate(_) => "binary-predicate",
+          LishpValue::Lambda { .. } => "lambda",
+          _ => "symbol",
         };
 
         Ok(LishpValue::String(type_name.into()))
@@ -475,7 +614,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         let value = self.eval(&arguments[0])?;
 
         match value {
-          LishpValue::String(s) => Ok(LishpValue::Symbol(s)),
+          LishpValue::String(s) => Ok(LishpValue::Symbol { name: s }),
           _ => Err(EvalError::TypeError(
             "symbol expects a string argument".to_string(),
           )),
@@ -485,29 +624,33 @@ impl<'io, 'env> Evaluator<'io, 'env> {
       SpecialForm::Define => {
         let arguments = get_elements(tail, 2)?;
 
-        match &arguments[0] {
-          LishpValue::Symbol(name) => {
-            let value = self.eval(&arguments[1])?;
-            self.env.set(name, value);
-            Ok(LishpValue::Nil)
+        if let LishpValue::Symbol { name } = &arguments[0] {
+          let value = self.eval(&arguments[1])?;
+
+          if let LishpValue::Lambda { environment, .. } = &value {
+            environment.borrow_mut().define(name, value.clone());
           }
-          _ => Err(EvalError::CannotDefineNonSymbol),
+
+          self.env.define(name, value);
+          Ok(LishpValue::Nil)
+        } else {
+          Err(EvalError::CannotDefineNonSymbol)
         }
       }
 
       SpecialForm::Set => {
         let arguments = get_elements(tail, 2)?;
 
-        match &arguments[0] {
-          LishpValue::Symbol(name) => {
-            if !self.env.contains(name) {
-              return Err(EvalError::UndefinedVariable(name.to_string()));
-            }
-            let value = self.eval(&arguments[1])?;
-            self.env.set(name, value);
-            Ok(LishpValue::Nil)
+        if let LishpValue::Symbol { name } = &arguments[0] {
+          if !self.env.contains(name) {
+            return Err(EvalError::UndefinedVariable(name.to_string()));
           }
-          _ => Err(EvalError::CannotSetNonSymbol),
+
+          let value = self.eval(&arguments[1])?;
+          self.env.set(name, value)?;
+          Ok(LishpValue::Nil)
+        } else {
+          Err(EvalError::CannotSetNonSymbol)
         }
       }
 
@@ -524,10 +667,8 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           }
         };
 
-        // Read file contents
         let contents = self.io.read_file(&path)?;
 
-        // Parse all expressions from the file
         let mut remaining = contents.as_str();
         let mut last_result = LishpValue::Nil;
 
@@ -671,7 +812,7 @@ mod tests {
 
   #[test]
   fn test_eval_predicate_equals_true() {
-    // (_==_ 5 5) = true
+    // (_=_ 5 5) = true
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
@@ -690,7 +831,7 @@ mod tests {
 
   #[test]
   fn test_eval_predicate_equals_false() {
-    // (_==_ 5 10) = false
+    // (_=_ 5 10) = false
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
@@ -834,7 +975,7 @@ mod tests {
 
   #[test]
   fn test_eval_predicate_equals_different_types() {
-    // (_==_ 5 "5") = false
+    // (_=_ 5 "5") = false
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
@@ -861,7 +1002,7 @@ mod tests {
     let expr = cons(
       LishpValue::SpecialForm(SpecialForm::Define),
       cons(
-        LishpValue::Symbol("x".into()),
+        LishpValue::Symbol { name: "x".into() },
         cons(LishpValue::Integer(42), LishpValue::Nil),
       ),
     );
@@ -870,7 +1011,9 @@ mod tests {
     assert_eq!(result, LishpValue::Nil);
 
     // Now x should be defined
-    let x_value = evaluator.eval(&LishpValue::Symbol("x".into())).unwrap();
+    let x_value = evaluator
+      .eval(&LishpValue::Symbol { name: "x".into() })
+      .unwrap();
     assert_eq!(x_value, LishpValue::Integer(42));
   }
 
@@ -892,7 +1035,7 @@ mod tests {
     let expr = cons(
       LishpValue::SpecialForm(SpecialForm::Define),
       cons(
-        LishpValue::Symbol("x".into()),
+        LishpValue::Symbol { name: "x".into() },
         cons(add_expr, LishpValue::Nil),
       ),
     );
@@ -900,7 +1043,9 @@ mod tests {
     evaluator.eval(&expr).unwrap();
 
     // x should equal 5
-    let x_value = evaluator.eval(&LishpValue::Symbol("x".into())).unwrap();
+    let x_value = evaluator
+      .eval(&LishpValue::Symbol { name: "x".into() })
+      .unwrap();
     assert_eq!(x_value, LishpValue::Integer(5));
   }
 
@@ -915,7 +1060,7 @@ mod tests {
     let def_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Define),
       cons(
-        LishpValue::Symbol("x".into()),
+        LishpValue::Symbol { name: "x".into() },
         cons(LishpValue::Integer(10), LishpValue::Nil),
       ),
     );
@@ -925,7 +1070,7 @@ mod tests {
     let set_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Set),
       cons(
-        LishpValue::Symbol("x".into()),
+        LishpValue::Symbol { name: "x".into() },
         cons(LishpValue::Integer(20), LishpValue::Nil),
       ),
     );
@@ -933,7 +1078,9 @@ mod tests {
     assert_eq!(result, LishpValue::Nil);
 
     // x should now equal 20
-    let x_value = evaluator.eval(&LishpValue::Symbol("x".into())).unwrap();
+    let x_value = evaluator
+      .eval(&LishpValue::Symbol { name: "x".into() })
+      .unwrap();
     assert_eq!(x_value, LishpValue::Integer(20));
   }
 
@@ -947,7 +1094,7 @@ mod tests {
     let set_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Set),
       cons(
-        LishpValue::Symbol("x".into()),
+        LishpValue::Symbol { name: "x".into() },
         cons(LishpValue::Integer(20), LishpValue::Nil),
       ),
     );
@@ -970,7 +1117,7 @@ mod tests {
     );
 
     let result = evaluator.eval(&expr).unwrap();
-    assert_eq!(result, LishpValue::Symbol("x".into()));
+    assert_eq!(result, LishpValue::Symbol { name: "x".into() });
   }
 
   #[test]
@@ -980,7 +1127,7 @@ mod tests {
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-    let result = evaluator.eval(&LishpValue::Symbol("x".into()));
+    let result = evaluator.eval(&LishpValue::Symbol { name: "x".into() });
     assert!(result.is_err());
     assert!(matches!(result, Err(EvalError::UndefinedVariable(_))));
   }
@@ -996,7 +1143,7 @@ mod tests {
     let def_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Define),
       cons(
-        LishpValue::Symbol("x".into()),
+        LishpValue::Symbol { name: "x".into() },
         cons(LishpValue::Integer(5), LishpValue::Nil),
       ),
     );
@@ -1006,12 +1153,417 @@ mod tests {
     let add_expr = cons(
       LishpValue::BinaryOperator(BinaryOperator::Add),
       cons(
-        LishpValue::Symbol("x".into()),
+        LishpValue::Symbol { name: "x".into() },
         cons(LishpValue::Integer(3), LishpValue::Nil),
       ),
     );
 
     let result = evaluator.eval(&add_expr).unwrap();
     assert_eq!(result, LishpValue::Integer(8));
+  }
+
+  #[test]
+  fn test_eval_lambda_simple() {
+    // (lambda (x y) (_+_ x y)) вызванная с (2 3) = 5
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Список аргументов: (x y)
+    let args = cons(
+      LishpValue::Symbol { name: "x".into() },
+      cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+    );
+
+    // Тело: (_+_ x y)
+    let body = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+      ),
+    );
+
+    // (lambda (x y) (_+_ x y))
+    let lambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let lambda = evaluator.eval(&lambda_expr).unwrap();
+
+    // Вызываем lambda с аргументами (2 3)
+    let call_expr = cons(
+      lambda,
+      cons(
+        LishpValue::Integer(2),
+        cons(LishpValue::Integer(3), LishpValue::Nil),
+      ),
+    );
+
+    let result = evaluator.eval(&call_expr).unwrap();
+    assert_eq!(result, LishpValue::Integer(5));
+  }
+
+  #[test]
+  fn test_eval_lambda_currying() {
+    // ((lambda (x y) (_+_ x y)) 2) вызванная с недостаточным количеством аргументов
+    // должна вернуть частично примененную lambda
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Список аргументов: (x y)
+    let args = cons(
+      LishpValue::Symbol { name: "x".into() },
+      cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+    );
+
+    // Тело: (_+_ x y)
+    let body = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+      ),
+    );
+
+    // (lambda (x y) (_+_ x y))
+    let lambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let lambda = evaluator.eval(&lambda_expr).unwrap();
+
+    // Вызываем lambda с одним аргументом (2)
+    let partial_call = cons(lambda, cons(LishpValue::Integer(2), LishpValue::Nil));
+
+    let partial_lambda = evaluator.eval(&partial_call).unwrap();
+
+    // Проверяем, что это Lambda
+    match &partial_lambda {
+      LishpValue::Lambda { arguments, .. } => {
+        assert_eq!(arguments.len(), 1);
+        assert_eq!(arguments[0], "y");
+      }
+      _ => panic!("Expected Lambda, got {:?}", partial_lambda),
+    }
+
+    // Теперь вызываем частично примененную lambda с оставшимся аргументом (3)
+    let final_call = cons(
+      partial_lambda,
+      cons(LishpValue::Integer(3), LishpValue::Nil),
+    );
+    let result = evaluator.eval(&final_call).unwrap();
+    assert_eq!(result, LishpValue::Integer(5));
+  }
+
+  #[test]
+  fn test_eval_lambda_currying_three_args() {
+    // (lambda (x y z) (_+_ (_+_ x y) z)) с каррированием
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Список аргументов: (x y z)
+    let args = cons(
+      LishpValue::Symbol { name: "x".into() },
+      cons(
+        LishpValue::Symbol { name: "y".into() },
+        cons(LishpValue::Symbol { name: "z".into() }, LishpValue::Nil),
+      ),
+    );
+
+    // Тело: (_+_ (_+_ x y) z)
+    let inner_add = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+      ),
+    );
+    let body = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        inner_add,
+        cons(LishpValue::Symbol { name: "z".into() }, LishpValue::Nil),
+      ),
+    );
+
+    // (lambda (x y z) (_+_ (_+_ x y) z))
+    let lambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let lambda = evaluator.eval(&lambda_expr).unwrap();
+
+    // Передаем один аргумент
+    let partial1 = cons(lambda, cons(LishpValue::Integer(1), LishpValue::Nil));
+    let lambda1 = evaluator.eval(&partial1).unwrap();
+
+    // Передаем второй аргумент
+    let partial2 = cons(lambda1, cons(LishpValue::Integer(2), LishpValue::Nil));
+    let lambda2 = evaluator.eval(&partial2).unwrap();
+
+    // Передаем третий аргумент
+    let final_call = cons(lambda2, cons(LishpValue::Integer(3), LishpValue::Nil));
+    let result = evaluator.eval(&final_call).unwrap();
+
+    // 1 + 2 + 3 = 6
+    assert_eq!(result, LishpValue::Integer(6));
+  }
+
+  #[test]
+  fn test_eval_lambda_variadic_args() {
+    // (lambda (x y) y) вызванная с (1 2 3 4 5)
+    // x = 1, y = (2 3 4 5)
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Список аргументов: (x y)
+    let args = cons(
+      LishpValue::Symbol { name: "x".into() },
+      cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+    );
+
+    // Тело: y (возвращаем второй аргумент)
+    let body = LishpValue::Symbol { name: "y".into() };
+
+    // (lambda (x y) y)
+    let lambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let lambda = evaluator.eval(&lambda_expr).unwrap();
+
+    // Вызываем lambda с аргументами (1 2 3 4 5)
+    let call_expr = cons(
+      lambda,
+      cons(
+        LishpValue::Integer(1),
+        cons(
+          LishpValue::Integer(2),
+          cons(
+            LishpValue::Integer(3),
+            cons(
+              LishpValue::Integer(4),
+              cons(LishpValue::Integer(5), LishpValue::Nil),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    let result = evaluator.eval(&call_expr).unwrap();
+
+    // y должен быть списком (2 3 4 5)
+    let expected = cons(
+      LishpValue::Integer(2),
+      cons(
+        LishpValue::Integer(3),
+        cons(
+          LishpValue::Integer(4),
+          cons(LishpValue::Integer(5), LishpValue::Nil),
+        ),
+      ),
+    );
+    assert_eq!(result, expected);
+  }
+
+  #[test]
+  fn test_eval_lambda_variadic_single_param() {
+    // (lambda (x) x) вызванная с (1 2 3)
+    // x = (1 2 3)
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Список аргументов: (x)
+    let args = cons(LishpValue::Symbol { name: "x".into() }, LishpValue::Nil);
+
+    // Тело: x
+    let body = LishpValue::Symbol { name: "x".into() };
+
+    // (lambda (x) x)
+    let lambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let lambda = evaluator.eval(&lambda_expr).unwrap();
+
+    // Вызываем lambda с аргументами (1 2 3)
+    let call_expr = cons(
+      lambda,
+      cons(
+        LishpValue::Integer(1),
+        cons(
+          LishpValue::Integer(2),
+          cons(LishpValue::Integer(3), LishpValue::Nil),
+        ),
+      ),
+    );
+
+    let result = evaluator.eval(&call_expr).unwrap();
+
+    // x должен быть списком (1 2 3)
+    let expected = cons(
+      LishpValue::Integer(1),
+      cons(
+        LishpValue::Integer(2),
+        cons(LishpValue::Integer(3), LishpValue::Nil),
+      ),
+    );
+    assert_eq!(result, expected);
+  }
+
+  #[test]
+  fn test_eval_lambda_variadic_with_car() {
+    // (lambda (x rest) x) вызванная с (10 20 30 40)
+    // x = 10, rest = (20 30 40)
+    // Проверяем, что можем использовать car на rest
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Список аргументов: (x rest)
+    let args = cons(
+      LishpValue::Symbol { name: "x".into() },
+      cons(
+        LishpValue::Symbol {
+          name: "rest".into(),
+        },
+        LishpValue::Nil,
+      ),
+    );
+
+    // Тело: (car rest)
+    let body = cons(
+      LishpValue::SpecialForm(SpecialForm::Car),
+      cons(
+        LishpValue::Symbol {
+          name: "rest".into(),
+        },
+        LishpValue::Nil,
+      ),
+    );
+
+    // (lambda (x rest) (car rest))
+    let lambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let lambda = evaluator.eval(&lambda_expr).unwrap();
+
+    // Вызываем lambda с аргументами (10 20 30 40)
+    let call_expr = cons(
+      lambda,
+      cons(
+        LishpValue::Integer(10),
+        cons(
+          LishpValue::Integer(20),
+          cons(
+            LishpValue::Integer(30),
+            cons(LishpValue::Integer(40), LishpValue::Nil),
+          ),
+        ),
+      ),
+    );
+
+    let result = evaluator.eval(&call_expr).unwrap();
+
+    // (car rest) = (car (20 30 40)) = 20
+    assert_eq!(result, LishpValue::Integer(20));
+  }
+
+  #[test]
+  fn test_eval_lambda_recursive_factorial() {
+    // (def factorial (lambda (n) (if (_>_ n 1) (_*_ n (factorial (_-_ n 1))) 1)))
+    // (factorial 5) = 120
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Внутреннее условие: (_>_ n 1)
+    let condition = cons(
+      LishpValue::BinaryPredicate(BinaryPredicate::GreaterThan),
+      cons(
+        LishpValue::Symbol { name: "n".into() },
+        cons(LishpValue::Integer(1), LishpValue::Nil),
+      ),
+    );
+
+    // Рекурсивный вызов: (_-_ n 1)
+    let n_minus_1 = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Subtract),
+      cons(
+        LishpValue::Symbol { name: "n".into() },
+        cons(LishpValue::Integer(1), LishpValue::Nil),
+      ),
+    );
+
+    // (factorial (_-_ n 1))
+    let recursive_call = cons(
+      LishpValue::Symbol {
+        name: "factorial".into(),
+      },
+      cons(n_minus_1, LishpValue::Nil),
+    );
+
+    // (_*_ n (factorial (_-_ n 1)))
+    let multiply = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Multiply),
+      cons(
+        LishpValue::Symbol { name: "n".into() },
+        cons(recursive_call, LishpValue::Nil),
+      ),
+    );
+
+    // (if (_>_ n 1) (_*_ n (factorial (_-_ n 1))) 1)
+    let if_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::If),
+      cons(
+        condition,
+        cons(multiply, cons(LishpValue::Integer(1), LishpValue::Nil)),
+      ),
+    );
+
+    // (lambda (n) (if ...))
+    let lambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(
+        cons(LishpValue::Symbol { name: "n".into() }, LishpValue::Nil),
+        cons(if_expr, LishpValue::Nil),
+      ),
+    );
+
+    // (def factorial (lambda ...))
+    let def_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol {
+          name: "factorial".into(),
+        },
+        cons(lambda_expr, LishpValue::Nil),
+      ),
+    );
+
+    evaluator.eval(&def_expr).unwrap();
+
+    // Теперь вызываем (factorial 5)
+    let call_expr = cons(
+      LishpValue::Symbol {
+        name: "factorial".into(),
+      },
+      cons(LishpValue::Integer(5), LishpValue::Nil),
+    );
+
+    let result = evaluator.eval(&call_expr).unwrap();
+    assert_eq!(result, LishpValue::Integer(120)); // 5! = 120
   }
 }

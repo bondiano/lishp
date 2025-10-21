@@ -168,6 +168,10 @@ fn parse_special_form(i: &str) -> IResult<&str, LishpValue> {
       LishpValue::SpecialForm(SpecialForm::Load),
       parse_keyword("load"),
     ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      parse_keyword("lambda"),
+    ),
   ))
   .parse(i)
 }
@@ -303,8 +307,8 @@ fn parse_symbol(i: &str) -> IResult<&str, LishpValue> {
     )));
   }
 
-  map(take_while1(is_symbol_char), |s: &str| {
-    LishpValue::Symbol(s.into())
+  map(take_while1(is_symbol_char), |s: &str| LishpValue::Symbol {
+    name: s.into(),
   })
   .parse(i)
 }
@@ -631,11 +635,16 @@ mod tests {
   fn test_parse_symbol() {
     assert_eq!(
       parse("+").expect("Failed to parse symbol +"),
-      Some((LishpValue::Symbol("+".into()), ""))
+      Some((LishpValue::Symbol { name: "+".into() }, ""))
     );
     assert_eq!(
       parse("define").expect("Failed to parse symbol define"),
-      Some((LishpValue::Symbol("define".into()), ""))
+      Some((
+        LishpValue::Symbol {
+          name: "define".into()
+        },
+        ""
+      ))
     );
   }
 
@@ -762,19 +771,39 @@ mod tests {
   fn test_parse_symbol_not_special_form() {
     assert_eq!(
       parse("define").expect("Failed to parse symbol 'define'"),
-      Some((LishpValue::Symbol("define".into()), ""))
+      Some((
+        LishpValue::Symbol {
+          name: "define".into()
+        },
+        ""
+      ))
     );
     assert_eq!(
       parse("defn").expect("Failed to parse symbol 'defn'"),
-      Some((LishpValue::Symbol("defn".into()), ""))
+      Some((
+        LishpValue::Symbol {
+          name: "defn".into()
+        },
+        ""
+      ))
     );
     assert_eq!(
       parse("iffy").expect("Failed to parse symbol 'iffy'"),
-      Some((LishpValue::Symbol("iffy".into()), ""))
+      Some((
+        LishpValue::Symbol {
+          name: "iffy".into()
+        },
+        ""
+      ))
     );
     assert_eq!(
       parse("letter").expect("Failed to parse symbol 'letter'"),
-      Some((LishpValue::Symbol("letter".into()), ""))
+      Some((
+        LishpValue::Symbol {
+          name: "letter".into()
+        },
+        ""
+      ))
     );
   }
 
@@ -834,7 +863,7 @@ mod tests {
         LishpValue::Cons(
           Rc::new(LishpValue::SpecialForm(SpecialForm::Quote)),
           Rc::new(LishpValue::Cons(
-            Rc::new(LishpValue::Symbol("asd".into())),
+            Rc::new(LishpValue::Symbol { name: "asd".into() }),
             Rc::new(LishpValue::Nil)
           ))
         ),
@@ -888,11 +917,21 @@ mod tests {
   fn test_bool_like_symbols() {
     assert_eq!(
       parse("truex").expect("Failed to parse symbol 'truex'"),
-      Some((LishpValue::Symbol("truex".into()), ""))
+      Some((
+        LishpValue::Symbol {
+          name: "truex".into()
+        },
+        ""
+      ))
     );
     assert_eq!(
       parse("falsea").expect("Failed to parse symbol 'falsea'"),
-      Some((LishpValue::Symbol("falsea".into()), ""))
+      Some((
+        LishpValue::Symbol {
+          name: "falsea".into()
+        },
+        ""
+      ))
     );
   }
 
@@ -900,7 +939,12 @@ mod tests {
   fn test_nil_like_symbols() {
     assert_eq!(
       parse("nilx").expect("Failed to parse symbol 'nilx'"),
-      Some((LishpValue::Symbol("nilx".into()), ""))
+      Some((
+        LishpValue::Symbol {
+          name: "nilx".into()
+        },
+        ""
+      ))
     );
   }
 

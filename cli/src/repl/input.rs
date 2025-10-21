@@ -56,6 +56,7 @@ impl InputHandler {
       }
       Err(EvalError::Incomplete) => Ok(LineResult::NeedMore),
       Err(EvalError::Error(msg)) => {
+        editor.add_history_entry(self.buffer.as_str())?;
         self.buffer.clear();
         Ok(LineResult::Error(msg))
       }

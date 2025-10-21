@@ -1,6 +1,8 @@
-use std::{fmt, rc::Rc, str::FromStr};
+use std::{cell::RefCell, fmt, rc::Rc, str::FromStr};
 
 use ecow::EcoString;
+
+use crate::Environment;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpecialForm {
@@ -17,6 +19,7 @@ pub enum SpecialForm {
   Read,
   Print,
   Symbol,
+  Lambda,
   Load,
 }
 
@@ -38,6 +41,7 @@ impl FromStr for SpecialForm {
       "read" => Ok(SpecialForm::Read),
       "print" => Ok(SpecialForm::Print),
       "symbol" => Ok(SpecialForm::Symbol),
+      "lambda" => Ok(SpecialForm::Lambda),
       "load" => Ok(SpecialForm::Load),
       _ => Err(format!("Invalid special form: {}", value)),
     }
@@ -60,6 +64,7 @@ impl fmt::Display for SpecialForm {
       SpecialForm::Read => write!(f, "read"),
       SpecialForm::Print => write!(f, "print"),
       SpecialForm::Symbol => write!(f, "symbol"),
+      SpecialForm::Lambda => write!(f, "lambda"),
       SpecialForm::Load => write!(f, "load"),
     }
   }
@@ -134,13 +139,20 @@ impl fmt::Display for BinaryPredicate {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum LishpValue {
   Integer(i64),
   Double(f64),
   String(EcoString),
-  Symbol(EcoString),
+  Symbol {
+    name: EcoString,
+  },
   Bool(bool),
+  Lambda {
+    arguments: Vec<EcoString>,
+    body: Rc<LishpValue>,
+    environment: Rc<RefCell<Environment>>,
+  },
   Nil,
 
   SpecialForm(SpecialForm),
@@ -148,6 +160,25 @@ pub enum LishpValue {
   BinaryPredicate(BinaryPredicate),
 
   Cons(Rc<LishpValue>, Rc<LishpValue>),
+}
+
+impl PartialEq for LishpValue {
+  fn eq(&self, other: &Self) -> bool {
+    match (self, other) {
+      (LishpValue::Integer(a), LishpValue::Integer(b)) => a == b,
+      (LishpValue::Double(a), LishpValue::Double(b)) => a == b,
+      (LishpValue::String(a), LishpValue::String(b)) => a == b,
+      (LishpValue::Symbol { name: a }, LishpValue::Symbol { name: b }) => a == b,
+      (LishpValue::Bool(a), LishpValue::Bool(b)) => a == b,
+      (LishpValue::Nil, LishpValue::Nil) => true,
+      (LishpValue::SpecialForm(a), LishpValue::SpecialForm(b)) => a == b,
+      (LishpValue::BinaryOperator(a), LishpValue::BinaryOperator(b)) => a == b,
+      (LishpValue::BinaryPredicate(a), LishpValue::BinaryPredicate(b)) => a == b,
+      (LishpValue::Cons(a, b), LishpValue::Cons(c, d)) => a == c && b == d,
+
+      _ => false,
+    }
+  }
 }
 
 impl From<i64> for LishpValue {
@@ -199,7 +230,7 @@ impl fmt::Display for LishpValue {
         }
         write!(f, "\"")
       }
-      LishpValue::Symbol(value) => write!(f, "{}", value),
+      LishpValue::Symbol { name } => write!(f, "{}", name),
       LishpValue::Bool(value) => write!(f, "{}", value),
       LishpValue::Nil => write!(f, "nil"),
       LishpValue::SpecialForm(value) => write!(f, "{}", value),
@@ -221,6 +252,18 @@ impl fmt::Display for LishpValue {
         }
 
         write!(f, ")")
+      }
+      LishpValue::Lambda {
+        arguments, body, ..
+      } => {
+        write!(f, "(lambda (")?;
+        for (idx, argument) in arguments.iter().enumerate() {
+          if idx > 0 {
+            write!(f, " ")?;
+          }
+          write!(f, "{}", argument)?;
+        }
+        write!(f, ") {})", body)
       }
     }
   }
@@ -256,6 +299,10 @@ pub fn is_pair(value: &LishpValue) -> bool {
   matches!(value, LishpValue::Cons(_, _))
 }
 
+pub fn is_symbol(value: &LishpValue) -> bool {
+  matches!(value, LishpValue::Symbol { .. })
+}
+
 pub fn list(items: Vec<LishpValue>) -> LishpValue {
   items
     .into_iter()
@@ -263,11 +310,13 @@ pub fn list(items: Vec<LishpValue>) -> LishpValue {
     .fold(LishpValue::Nil, |acc, item| cons(item, acc))
 }
 
-pub struct Symbol(pub EcoString);
+pub struct Symbol {
+  pub name: EcoString,
+}
 
 impl From<Symbol> for LishpValue {
   fn from(value: Symbol) -> Self {
-    LishpValue::Symbol(value.0)
+    LishpValue::Symbol { name: value.name }
   }
 }
 
@@ -289,7 +338,7 @@ macro_rules! lishp_list {
 #[macro_export]
 macro_rules! sym {
   ($s:expr) => {
-    $crate::value::Symbol($s.into())
+    $crate::value::Symbol { name: $s.into() }
   };
 }
 
