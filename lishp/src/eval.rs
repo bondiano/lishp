@@ -405,6 +405,55 @@ impl<'io, 'env> Evaluator<'io, 'env> {
             lambda_evaluator.eval(&body)
           }
 
+          LishpValue::Dambda { arguments, body } => {
+            let mut dambda_env = Environment::new();
+            dambda_env.parent = Some(Rc::new(RefCell::new(self.env.clone())));
+
+            let mut current_tail = tail;
+            let param_count = arguments.len();
+
+            for (idx, param_name) in arguments.iter().enumerate() {
+              let is_last_param = idx == param_count - 1;
+
+              if matches!(current_tail, LishpValue::Nil) {
+                return Err(EvalError::WrongArgumentCount {
+                  form: "dambda".to_string(),
+                  expected: param_count,
+                  got: idx,
+                });
+              }
+
+              let arg_value = car(current_tail).unwrap();
+              let next_tail = cdr(current_tail).unwrap_or(&LishpValue::Nil);
+
+              if is_last_param && !matches!(next_tail, LishpValue::Nil) {
+                let mut rest_args = Vec::new();
+                let mut rest_tail = current_tail;
+
+                while !matches!(rest_tail, LishpValue::Nil) {
+                  if let Some(arg_val) = car(rest_tail) {
+                    rest_args.push(self.eval(arg_val)?);
+                  }
+                  rest_tail = cdr(rest_tail).unwrap_or(&LishpValue::Nil);
+                }
+
+                let rest_list = rest_args
+                  .into_iter()
+                  .rev()
+                  .fold(LishpValue::Nil, |acc, item| cons(item, acc));
+
+                dambda_env.define(param_name, rest_list);
+              } else {
+                let evaluated_arg = self.eval(arg_value)?;
+                dambda_env.define(param_name, evaluated_arg);
+                current_tail = next_tail;
+              }
+            }
+
+            let mut dambda_evaluator = Evaluator::with_environment(self.io, &mut dambda_env);
+            dambda_evaluator.eval(&body)
+          }
+
           _ => Err(EvalError::WrongHeadForm),
         }
       }
@@ -460,6 +509,48 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           arguments,
           body: Rc::new(body.clone()),
           environment: Rc::new(RefCell::new(environment)),
+        })
+      }
+
+      // like lambda, but with dynamic environment
+      SpecialForm::Dambda => {
+        let elements = get_elements(tail, 2)?;
+        let args_list = &elements[0];
+        let body = &elements[1];
+
+        if !is_list(args_list) {
+          return Err(EvalError::TypeError(format!(
+            "dambda expects a list of arguments, got: {}",
+            args_list
+          )));
+        }
+
+        let mut arguments = Vec::new();
+        let mut current = args_list;
+        while !matches!(current, LishpValue::Nil) {
+          if let Some(head) = car(current) {
+            match head {
+              LishpValue::Symbol { name } => arguments.push(name.clone()),
+              _ => {
+                return Err(EvalError::TypeError(format!(
+                  "dambda argument must be a symbol, got: {}",
+                  head
+                )));
+              }
+            }
+            if let Some(tail) = cdr(current) {
+              current = tail;
+            } else {
+              break;
+            }
+          } else {
+            break;
+          }
+        }
+
+        Ok(LishpValue::Dambda {
+          arguments,
+          body: Rc::new(body.clone()),
         })
       }
 
@@ -523,6 +614,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           LishpValue::Cons(_, _) => "cons",
           LishpValue::SpecialForm(_) => "special-form",
           LishpValue::Lambda { .. } => "lambda",
+          LishpValue::Dambda { .. } => "dambda",
           _ => "symbol",
         };
 
@@ -1565,5 +1657,470 @@ mod tests {
 
     let result = evaluator.eval(&call_expr).unwrap();
     assert_eq!(result, LishpValue::Integer(120)); // 5! = 120
+  }
+
+  #[test]
+  fn test_eval_dambda_dynamic_scope_vs_lambda_lexical() {
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Global x = 100
+    let def_x_global = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Integer(100), LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_x_global).unwrap();
+
+    // (lambda (y) (_+_ x y)) - captures global x = 100
+    let lambda_args = cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil);
+    let lambda_body = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+      ),
+    );
+    let lambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(lambda_args, cons(lambda_body.clone(), LishpValue::Nil)),
+    );
+    let def_lam = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol { name: "lam".into() },
+        cons(lambda_expr, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_lam).unwrap();
+
+    // (dambda (y) (_+_ x y)) - uses dynamic x
+    let dambda_args = cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil);
+    let dambda_body = lambda_body.clone();
+    let dambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Dambda),
+      cons(dambda_args, cons(dambda_body, LishpValue::Nil)),
+    );
+    let def_dam = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol { name: "dam".into() },
+        cons(dambda_expr, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_dam).unwrap();
+
+    let helper_body = cons(
+      LishpValue::SpecialForm(SpecialForm::Do),
+      cons(
+        cons(
+          LishpValue::SpecialForm(SpecialForm::Define),
+          cons(
+            LishpValue::Symbol { name: "x".into() },
+            cons(LishpValue::Integer(5), LishpValue::Nil),
+          ),
+        ),
+        cons(
+          cons(
+            LishpValue::Symbol { name: "f".into() },
+            cons(LishpValue::Integer(10), LishpValue::Nil),
+          ),
+          LishpValue::Nil,
+        ),
+      ),
+    );
+    let helper_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(
+        cons(LishpValue::Symbol { name: "f".into() }, LishpValue::Nil),
+        cons(helper_body, LishpValue::Nil),
+      ),
+    );
+    let def_helper = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol {
+          name: "helper".into(),
+        },
+        cons(helper_expr, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_helper).unwrap();
+
+    let call_lambda = cons(
+      LishpValue::Symbol {
+        name: "helper".into(),
+      },
+      cons(LishpValue::Symbol { name: "lam".into() }, LishpValue::Nil),
+    );
+    let result_lambda = evaluator.eval(&call_lambda).unwrap();
+    assert_eq!(result_lambda, LishpValue::Integer(110)); // 100 + 10
+
+    let call_dambda = cons(
+      LishpValue::Symbol {
+        name: "helper".into(),
+      },
+      cons(LishpValue::Symbol { name: "dam".into() }, LishpValue::Nil),
+    );
+    let result_dambda = evaluator.eval(&call_dambda).unwrap();
+    assert_eq!(result_dambda, LishpValue::Integer(15)); // 5 + 10
+  }
+
+  #[test]
+  fn test_eval_dambda_nested_dynamic_scope() {
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // Global x = 1
+    let def_x = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Integer(1), LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_x).unwrap();
+
+    // (dambda () x)
+    let get_x_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Dambda),
+      cons(
+        LishpValue::Nil,
+        cons(LishpValue::Symbol { name: "x".into() }, LishpValue::Nil),
+      ),
+    );
+    let def_get_x = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol {
+          name: "get-x".into(),
+        },
+        cons(get_x_expr, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_get_x).unwrap();
+
+    // (lambda () (do (def x 2) (get-x)))
+    let level1_body = cons(
+      LishpValue::SpecialForm(SpecialForm::Do),
+      cons(
+        cons(
+          LishpValue::SpecialForm(SpecialForm::Define),
+          cons(
+            LishpValue::Symbol { name: "x".into() },
+            cons(LishpValue::Integer(2), LishpValue::Nil),
+          ),
+        ),
+        cons(
+          cons(
+            LishpValue::Symbol {
+              name: "get-x".into(),
+            },
+            LishpValue::Nil,
+          ),
+          LishpValue::Nil,
+        ),
+      ),
+    );
+    let level1_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(LishpValue::Nil, cons(level1_body, LishpValue::Nil)),
+    );
+    let def_level1 = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol {
+          name: "level1".into(),
+        },
+        cons(level1_expr, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_level1).unwrap();
+
+    // Call level1 - should return 2 (dynamic x from level1)
+    let call_level1 = cons(
+      LishpValue::Symbol {
+        name: "level1".into(),
+      },
+      LishpValue::Nil,
+    );
+    let result = evaluator.eval(&call_level1).unwrap();
+    assert_eq!(result, LishpValue::Integer(2));
+  }
+
+  #[test]
+  fn test_eval_dambda_no_partial_application() {
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // (dambda (x y) (_+_ x y))
+    let args = cons(
+      LishpValue::Symbol { name: "x".into() },
+      cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+    );
+
+    let body = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+      ),
+    );
+
+    let dambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Dambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let dambda = evaluator.eval(&dambda_expr).unwrap();
+
+    // Call with only one argument
+    let call_expr = cons(dambda, cons(LishpValue::Integer(2), LishpValue::Nil));
+
+    let result = evaluator.eval(&call_expr);
+    assert!(result.is_err());
+    assert!(matches!(result, Err(EvalError::WrongArgumentCount { .. })));
+  }
+
+  #[test]
+  fn test_eval_dambda_simple() {
+    // (dambda (x y) (_+_ x y)) called with (2 3) = 5
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    let args = cons(
+      LishpValue::Symbol { name: "x".into() },
+      cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+    );
+
+    let body = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+      ),
+    );
+
+    let dambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Dambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let dambda = evaluator.eval(&dambda_expr).unwrap();
+
+    let call_expr = cons(
+      dambda,
+      cons(
+        LishpValue::Integer(2),
+        cons(LishpValue::Integer(3), LishpValue::Nil),
+      ),
+    );
+
+    let result = evaluator.eval(&call_expr).unwrap();
+    assert_eq!(result, LishpValue::Integer(5));
+  }
+
+  #[test]
+  fn test_eval_dambda_variadic() {
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    let args = cons(
+      LishpValue::Symbol { name: "x".into() },
+      cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+    );
+
+    let body = LishpValue::Symbol { name: "y".into() };
+
+    let dambda_expr = cons(
+      LishpValue::SpecialForm(SpecialForm::Dambda),
+      cons(args, cons(body, LishpValue::Nil)),
+    );
+
+    let dambda = evaluator.eval(&dambda_expr).unwrap();
+
+    let call_expr = cons(
+      dambda,
+      cons(
+        LishpValue::Integer(1),
+        cons(
+          LishpValue::Integer(2),
+          cons(
+            LishpValue::Integer(3),
+            cons(LishpValue::Integer(4), LishpValue::Nil),
+          ),
+        ),
+      ),
+    );
+
+    let result = evaluator.eval(&call_expr).unwrap();
+
+    let expected = cons(
+      LishpValue::Integer(2),
+      cons(
+        LishpValue::Integer(3),
+        cons(LishpValue::Integer(4), LishpValue::Nil),
+      ),
+    );
+    assert_eq!(result, expected);
+  }
+
+  #[test]
+  fn test_eval_dambda_no_closure() {
+    // Test that dambda doesn't capture variables in closure like lambda does
+    // (def a 1000)
+    // (def add (lambda (a) (dambda (x) (_+_ x a))))
+    // (def all (lambda (a) (lambda (x) (_+_ x a))))
+    // (def add-10 (add 10))
+    // (def all-10 (all 10))
+    // (add-10 100) should be 1100 (uses dynamic a = 1000)
+    // (all-10 100) should be 110 (uses lexical a = 10)
+    let mut io = MockIoAdapter::new(vec![]);
+    let mut env = Environment::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+    // (def a 1000)
+    let def_a = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol { name: "a".into() },
+        cons(LishpValue::Integer(1000), LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_a).unwrap();
+
+    // (_+_ x a)
+    let add_body = cons(
+      LishpValue::BinaryOperator(BinaryOperator::Add),
+      cons(
+        LishpValue::Symbol { name: "x".into() },
+        cons(LishpValue::Symbol { name: "a".into() }, LishpValue::Nil),
+      ),
+    );
+
+    // (dambda (x) (_+_ x a))
+    let inner_dambda = cons(
+      LishpValue::SpecialForm(SpecialForm::Dambda),
+      cons(
+        cons(LishpValue::Symbol { name: "x".into() }, LishpValue::Nil),
+        cons(add_body.clone(), LishpValue::Nil),
+      ),
+    );
+
+    // (lambda (a) (dambda (x) (_+_ x a)))
+    let add_lambda = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(
+        cons(LishpValue::Symbol { name: "a".into() }, LishpValue::Nil),
+        cons(inner_dambda, LishpValue::Nil),
+      ),
+    );
+
+    // (def add ...)
+    let def_add = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol {
+          name: "add".into(),
+        },
+        cons(add_lambda, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_add).unwrap();
+
+    // (lambda (x) (_+_ x a))
+    let inner_lambda = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(
+        cons(LishpValue::Symbol { name: "x".into() }, LishpValue::Nil),
+        cons(add_body.clone(), LishpValue::Nil),
+      ),
+    );
+
+    // (lambda (a) (lambda (x) (_+_ x a)))
+    let all_lambda = cons(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      cons(
+        cons(LishpValue::Symbol { name: "a".into() }, LishpValue::Nil),
+        cons(inner_lambda, LishpValue::Nil),
+      ),
+    );
+
+    // (def all ...)
+    let def_all = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol {
+          name: "all".into(),
+        },
+        cons(all_lambda, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_all).unwrap();
+
+    // (def add-10 (add 10))
+    let add_10_call = cons(
+      LishpValue::Symbol {
+        name: "add".into(),
+      },
+      cons(LishpValue::Integer(10), LishpValue::Nil),
+    );
+    let add_10 = evaluator.eval(&add_10_call).unwrap();
+    let def_add_10 = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol {
+          name: "add-10".into(),
+        },
+        cons(add_10, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_add_10).unwrap();
+
+    // (def all-10 (all 10))
+    let all_10_call = cons(
+      LishpValue::Symbol {
+        name: "all".into(),
+      },
+      cons(LishpValue::Integer(10), LishpValue::Nil),
+    );
+    let all_10 = evaluator.eval(&all_10_call).unwrap();
+    let def_all_10 = cons(
+      LishpValue::SpecialForm(SpecialForm::Define),
+      cons(
+        LishpValue::Symbol {
+          name: "all-10".into(),
+        },
+        cons(all_10, LishpValue::Nil),
+      ),
+    );
+    evaluator.eval(&def_all_10).unwrap();
+
+    // (add-10 100) should be 1100 (dynamic a = 1000)
+    let call_add_10 = cons(
+      LishpValue::Symbol {
+        name: "add-10".into(),
+      },
+      cons(LishpValue::Integer(100), LishpValue::Nil),
+    );
+    let result_add = evaluator.eval(&call_add_10).unwrap();
+    assert_eq!(result_add, LishpValue::Integer(1100)); // 100 + 1000
+
+    // (all-10 100) should be 110 (lexical a = 10)
+    let call_all_10 = cons(
+      LishpValue::Symbol {
+        name: "all-10".into(),
+      },
+      cons(LishpValue::Integer(100), LishpValue::Nil),
+    );
+    let result_all = evaluator.eval(&call_all_10).unwrap();
+    assert_eq!(result_all, LishpValue::Integer(110)); // 100 + 10
   }
 }

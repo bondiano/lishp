@@ -20,6 +20,7 @@ pub enum SpecialForm {
   Print,
   Symbol,
   Lambda,
+  Dambda,
   Load,
 }
 
@@ -42,6 +43,7 @@ impl FromStr for SpecialForm {
       "print" => Ok(SpecialForm::Print),
       "symbol" => Ok(SpecialForm::Symbol),
       "lambda" => Ok(SpecialForm::Lambda),
+      "dambda" => Ok(SpecialForm::Dambda),
       "load" => Ok(SpecialForm::Load),
       _ => Err(format!("Invalid special form: {}", value)),
     }
@@ -66,6 +68,7 @@ impl fmt::Display for SpecialForm {
       SpecialForm::Symbol => write!(f, "symbol"),
       SpecialForm::Lambda => write!(f, "lambda"),
       SpecialForm::Load => write!(f, "load"),
+      SpecialForm::Dambda => write!(f, "dambda"),
     }
   }
 }
@@ -152,6 +155,10 @@ pub enum LishpValue {
     arguments: Vec<EcoString>,
     body: Rc<LishpValue>,
     environment: Rc<RefCell<Environment>>,
+  },
+  Dambda {
+    arguments: Vec<EcoString>,
+    body: Rc<LishpValue>,
   },
   Nil,
 
@@ -253,7 +260,8 @@ impl fmt::Display for LishpValue {
 
         write!(f, ")")
       }
-      LishpValue::Lambda {
+      LishpValue::Dambda { arguments, body }
+      | LishpValue::Lambda {
         arguments, body, ..
       } => {
         write!(f, "(lambda (")?;
