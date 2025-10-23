@@ -17,11 +17,21 @@ pub enum EvalError {
   #[error("Cannot set undefined variable: {0}")]
   CannotSetUndefinedVariable(String),
 
-  #[error("Invalid binary operator: {0}")]
-  InvalidBinaryOperator(BinaryOperator),
+  #[error("Invalid binary operator {operator}: cannot apply to types ({left_type}, {right_type})")]
+  InvalidBinaryOperator {
+    operator: BinaryOperator,
+    left_type: String,
+    right_type: String,
+  },
 
-  #[error("Invalid binary predicate: {0}")]
-  InvalidBinaryPredicate(BinaryPredicate),
+  #[error(
+    "Invalid binary predicate {predicate}: cannot apply to types ({left_type}, {right_type})"
+  )]
+  InvalidBinaryPredicate {
+    predicate: BinaryPredicate,
+    left_type: String,
+    right_type: String,
+  },
 
   #[error("Wrong number of arguments for {form}: expected {expected}, got {got}")]
   WrongArgumentCount {
@@ -39,8 +49,10 @@ pub enum EvalError {
   #[error("Cannot evaluate empty list (nil)")]
   EvalNil,
 
-  #[error("Wrong head form: expected special form, binary operator, or binary predicate")]
-  WrongHeadForm,
+  #[error(
+    "Cannot call {value_type} as a function (expected lambda, dambda, special form, binary operator, or binary predicate)"
+  )]
+  WrongHeadForm { value_type: String },
 
   #[error("Division by zero")]
   DivisionByZero,
@@ -197,42 +209,57 @@ fn eval_binary_operator(
   left: LishpValue,
   right: LishpValue,
 ) -> Result<LishpValue, EvalError> {
+  let left_type = left.type_name().to_string();
+  let right_type = right.type_name().to_string();
+
   match operator {
-    BinaryOperator::Add => match (left, right) {
+    BinaryOperator::Add => match (&left, &right) {
       (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
         Ok(LishpValue::Integer(left_val + right_val))
       }
       (LishpValue::Double(left_val), LishpValue::Double(right_val)) => {
         Ok(LishpValue::Double(left_val + right_val))
       }
-      _ => Err(EvalError::InvalidBinaryOperator(operator)),
+      _ => Err(EvalError::InvalidBinaryOperator {
+        operator,
+        left_type,
+        right_type,
+      }),
     },
-    BinaryOperator::Subtract => match (left, right) {
+    BinaryOperator::Subtract => match (&left, &right) {
       (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
         Ok(LishpValue::Integer(left_val - right_val))
       }
       (LishpValue::Double(left_val), LishpValue::Double(right_val)) => {
         Ok(LishpValue::Double(left_val - right_val))
       }
-      _ => Err(EvalError::InvalidBinaryOperator(operator)),
+      _ => Err(EvalError::InvalidBinaryOperator {
+        operator,
+        left_type,
+        right_type,
+      }),
     },
-    BinaryOperator::Multiply => match (left, right) {
+    BinaryOperator::Multiply => match (&left, &right) {
       (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
         Ok(LishpValue::Integer(left_val * right_val))
       }
       (LishpValue::Double(left_val), LishpValue::Double(right_val)) => {
         Ok(LishpValue::Double(left_val * right_val))
       }
-      _ => Err(EvalError::InvalidBinaryOperator(operator)),
+      _ => Err(EvalError::InvalidBinaryOperator {
+        operator,
+        left_type,
+        right_type,
+      }),
     },
     BinaryOperator::Divide => {
       if matches!(right, LishpValue::Integer(0) | LishpValue::Double(0.0)) {
         return Err(EvalError::DivisionByZero);
       }
 
-      match (left, right) {
+      match (&left, &right) {
         (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
-          let result = left_val as f64 / right_val as f64;
+          let result = *left_val as f64 / *right_val as f64;
           if result.fract() == 0.0 {
             Ok(LishpValue::Integer(result.trunc() as i64))
           } else {
@@ -243,19 +270,27 @@ fn eval_binary_operator(
           Ok(LishpValue::Double(left_val / right_val))
         }
         (LishpValue::Integer(left_val), LishpValue::Double(right_val)) => {
-          Ok(LishpValue::Double(left_val as f64 / right_val))
+          Ok(LishpValue::Double(*left_val as f64 / right_val))
         }
         (LishpValue::Double(left_val), LishpValue::Integer(right_val)) => {
-          Ok(LishpValue::Double(left_val / right_val as f64))
+          Ok(LishpValue::Double(left_val / *right_val as f64))
         }
-        _ => Err(EvalError::InvalidBinaryOperator(operator)),
+        _ => Err(EvalError::InvalidBinaryOperator {
+          operator,
+          left_type,
+          right_type,
+        }),
       }
     }
-    BinaryOperator::Modulo => match (left, right) {
+    BinaryOperator::Modulo => match (&left, &right) {
       (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
         Ok(LishpValue::Integer(left_val % right_val))
       }
-      _ => Err(EvalError::InvalidBinaryOperator(operator)),
+      _ => Err(EvalError::InvalidBinaryOperator {
+        operator,
+        left_type,
+        right_type,
+      }),
     },
     BinaryOperator::StrConcat => {
       let left_str = repr_to_str(&left);
@@ -270,25 +305,36 @@ fn eval_binary_predicate(
   left: LishpValue,
   right: LishpValue,
 ) -> Result<LishpValue, EvalError> {
+  let left_type = left.type_name().to_string();
+  let right_type = right.type_name().to_string();
+
   match predicate {
     BinaryPredicate::Equals => Ok(LishpValue::Bool(left == right)),
-    BinaryPredicate::LessThan => match (left, right) {
+    BinaryPredicate::LessThan => match (&left, &right) {
       (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
         Ok(LishpValue::Bool(left_val < right_val))
       }
       (LishpValue::Double(left_val), LishpValue::Double(right_val)) => {
         Ok(LishpValue::Bool(left_val < right_val))
       }
-      _ => Err(EvalError::InvalidBinaryPredicate(predicate)),
+      _ => Err(EvalError::InvalidBinaryPredicate {
+        predicate,
+        left_type,
+        right_type,
+      }),
     },
-    BinaryPredicate::GreaterThan => match (left, right) {
+    BinaryPredicate::GreaterThan => match (&left, &right) {
       (LishpValue::Integer(left_val), LishpValue::Integer(right_val)) => {
         Ok(LishpValue::Bool(left_val > right_val))
       }
       (LishpValue::Double(left_val), LishpValue::Double(right_val)) => {
         Ok(LishpValue::Bool(left_val > right_val))
       }
-      _ => Err(EvalError::InvalidBinaryPredicate(predicate)),
+      _ => Err(EvalError::InvalidBinaryPredicate {
+        predicate,
+        left_type,
+        right_type,
+      }),
     },
   }
 }
@@ -462,7 +508,9 @@ impl<'io, 'env> Evaluator<'io, 'env> {
             dambda_evaluator.eval_expanded(&body)
           }
 
-          _ => Err(EvalError::WrongHeadForm),
+          _ => Err(EvalError::WrongHeadForm {
+            value_type: evaluated_head.type_name().to_string(),
+          }),
         }
       }
 
@@ -654,20 +702,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         let arguments = get_elements(tail, 1)?;
         let evaluated_value = self.eval_expanded(&arguments[0])?;
 
-        let type_name = match evaluated_value {
-          LishpValue::Integer(_) => "integer",
-          LishpValue::Double(_) => "double",
-          LishpValue::String(_) => "string",
-          LishpValue::Bool(_) => "bool",
-          LishpValue::Nil => "nil",
-          LishpValue::Cons(_, _) => "cons",
-          LishpValue::SpecialForm(_) => "special-form",
-          LishpValue::Lambda { .. } => "lambda",
-          LishpValue::Dambda { .. } => "dambda",
-          _ => "symbol",
-        };
-
-        Ok(LishpValue::String(type_name.into()))
+        Ok(LishpValue::String(evaluated_value.type_name().into()))
       }
 
       SpecialForm::If => {

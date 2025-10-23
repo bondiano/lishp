@@ -179,6 +179,23 @@ pub enum LishpValue {
   Cons(Rc<LishpValue>, Rc<LishpValue>),
 }
 
+impl LishpValue {
+  pub fn type_name(&self) -> &'static str {
+    match self {
+      LishpValue::Integer(_) => "integer",
+      LishpValue::Double(_) => "double",
+      LishpValue::String(_) => "string",
+      LishpValue::Bool(_) => "boolean",
+      LishpValue::Lambda { .. } => "lambda",
+      LishpValue::Dambda { .. } => "dambda",
+      LishpValue::Macro { .. } => "macro",
+      LishpValue::Nil => "nil",
+      LishpValue::Cons(_, _) => "cons",
+      _ => "symbol",
+    }
+  }
+}
+
 impl PartialEq for LishpValue {
   fn eq(&self, other: &Self) -> bool {
     match (self, other) {
