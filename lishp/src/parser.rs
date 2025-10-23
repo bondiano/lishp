@@ -176,6 +176,14 @@ fn parse_special_form(i: &str) -> IResult<&str, LishpValue> {
       LishpValue::SpecialForm(SpecialForm::Dambda),
       parse_keyword("dambda"),
     ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Macro),
+      parse_keyword("macro"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::ExpandMacro),
+      parse_keyword("expand-macro"),
+    ),
   ))
   .parse(i)
 }

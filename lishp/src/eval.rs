@@ -5,6 +5,7 @@ use std::rc::Rc;
 use ecow::EcoString;
 use thiserror::Error;
 
+use crate::expand::MacroExpander;
 use crate::io::IoAdapter;
 use crate::parser;
 use crate::value::{
@@ -319,6 +320,13 @@ impl<'io, 'env> Evaluator<'io, 'env> {
   }
 
   pub fn eval(&mut self, value: &LishpValue) -> Result<LishpValue, EvalError> {
+    let expander = MacroExpander::new(self.env);
+    let expanded = expander.expand(value)?;
+
+    self.eval_expanded(&expanded)
+  }
+
+  fn eval_expanded(&mut self, value: &LishpValue) -> Result<LishpValue, EvalError> {
     match value {
       LishpValue::Symbol { name } => self
         .env
@@ -331,22 +339,22 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         }
 
         let head = car(value).ok_or(EvalError::EvalNil)?;
-        let evaluated_head = self.eval(head)?;
+        let evaluated_head = self.eval_expanded(head)?;
 
         let tail = cdr(value).ok_or(EvalError::EvalNil)?;
 
         match evaluated_head {
           LishpValue::BinaryOperator(operator) => {
             let arguments = get_elements(tail, 2)?;
-            let left = self.eval(&arguments[0])?;
-            let right = self.eval(&arguments[1])?;
+            let left = self.eval_expanded(&arguments[0])?;
+            let right = self.eval_expanded(&arguments[1])?;
             eval_binary_operator(operator, left, right)
           }
 
           LishpValue::BinaryPredicate(predicate) => {
             let arguments = get_elements(tail, 2)?;
-            let left = self.eval(&arguments[0])?;
-            let right = self.eval(&arguments[1])?;
+            let left = self.eval_expanded(&arguments[0])?;
+            let right = self.eval_expanded(&arguments[1])?;
             eval_binary_predicate(predicate, left, right)
           }
 
@@ -383,7 +391,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
                 while !matches!(rest_tail, LishpValue::Nil) {
                   if let Some(arg_val) = car(rest_tail) {
-                    rest_args.push(self.eval(arg_val)?);
+                    rest_args.push(self.eval_expanded(arg_val)?);
                   }
                   rest_tail = cdr(rest_tail).unwrap_or(&LishpValue::Nil);
                 }
@@ -395,14 +403,14 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
                 lambda_env.define(param_name, rest_list);
               } else {
-                let evaluated_arg = self.eval(arg_value)?;
+                let evaluated_arg = self.eval_expanded(arg_value)?;
                 lambda_env.define(param_name, evaluated_arg);
                 current_tail = next_tail;
               }
             }
 
             let mut lambda_evaluator = Evaluator::with_environment(self.io, &mut lambda_env);
-            lambda_evaluator.eval(&body)
+            lambda_evaluator.eval_expanded(&body)
           }
 
           LishpValue::Dambda { arguments, body } => {
@@ -432,7 +440,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
                 while !matches!(rest_tail, LishpValue::Nil) {
                   if let Some(arg_val) = car(rest_tail) {
-                    rest_args.push(self.eval(arg_val)?);
+                    rest_args.push(self.eval_expanded(arg_val)?);
                   }
                   rest_tail = cdr(rest_tail).unwrap_or(&LishpValue::Nil);
                 }
@@ -444,14 +452,14 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
                 dambda_env.define(param_name, rest_list);
               } else {
-                let evaluated_arg = self.eval(arg_value)?;
+                let evaluated_arg = self.eval_expanded(arg_value)?;
                 dambda_env.define(param_name, evaluated_arg);
                 current_tail = next_tail;
               }
             }
 
             let mut dambda_evaluator = Evaluator::with_environment(self.io, &mut dambda_env);
-            dambda_evaluator.eval(&body)
+            dambda_evaluator.eval_expanded(&body)
           }
 
           _ => Err(EvalError::WrongHeadForm),
@@ -554,6 +562,47 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         })
       }
 
+      SpecialForm::Macro => {
+        let elements = get_elements(tail, 2)?;
+        let args_list = &elements[0];
+        let body = &elements[1];
+
+        if !is_list(args_list) {
+          return Err(EvalError::TypeError(format!(
+            "macro expects a list of arguments, got: {}",
+            args_list
+          )));
+        }
+
+        let mut arguments = Vec::new();
+        let mut current = args_list;
+        while !matches!(current, LishpValue::Nil) {
+          if let Some(head) = car(current) {
+            match head {
+              LishpValue::Symbol { name } => arguments.push(name.clone()),
+              _ => {
+                return Err(EvalError::TypeError(format!(
+                  "macro argument must be a symbol, got: {}",
+                  head
+                )));
+              }
+            }
+            if let Some(tail) = cdr(current) {
+              current = tail;
+            } else {
+              break;
+            }
+          } else {
+            break;
+          }
+        }
+
+        Ok(LishpValue::Macro {
+          arguments,
+          body: Rc::new(body.clone()),
+        })
+      }
+
       SpecialForm::Quote => {
         let arguments = get_elements(tail, 1)?;
         Ok(arguments[0].clone())
@@ -561,8 +610,8 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
       SpecialForm::Cons => {
         let arguments = get_elements(tail, 2)?;
-        let first = self.eval(&arguments[0])?;
-        let second = self.eval(&arguments[1])?;
+        let first = self.eval_expanded(&arguments[0])?;
+        let second = self.eval_expanded(&arguments[1])?;
 
         if !is_list(&second) {
           return Err(EvalError::ExpectedList(second.to_string()));
@@ -573,7 +622,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
       SpecialForm::Car => {
         let arguments = get_elements(tail, 1)?;
-        let list_value = self.eval(&arguments[0])?;
+        let list_value = self.eval_expanded(&arguments[0])?;
 
         if !is_list(&list_value) {
           return Ok(list_value);
@@ -588,7 +637,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
       SpecialForm::Cdr => {
         let arguments = get_elements(tail, 1)?;
-        let list_value = self.eval(&arguments[0])?;
+        let list_value = self.eval_expanded(&arguments[0])?;
 
         if !is_list(&list_value) {
           return Ok(LishpValue::Nil);
@@ -603,7 +652,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
       SpecialForm::TypeOf => {
         let arguments = get_elements(tail, 1)?;
-        let evaluated_value = self.eval(&arguments[0])?;
+        let evaluated_value = self.eval_expanded(&arguments[0])?;
 
         let type_name = match evaluated_value {
           LishpValue::Integer(_) => "integer",
@@ -647,12 +696,12 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           None
         };
 
-        let condition = self.eval(condition_value)?;
+        let condition = self.eval_expanded(condition_value)?;
 
         if is_truthy(&condition) {
-          self.eval(then_value)
+          self.eval_expanded(then_value)
         } else if let Some(else_val) = else_value {
-          self.eval(else_val)
+          self.eval_expanded(else_val)
         } else {
           Ok(LishpValue::Nil)
         }
@@ -660,7 +709,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
       SpecialForm::Eval => {
         let arguments = get_elements(tail, 1)?;
-        let expression = self.eval(&arguments[0])?;
+        let expression = self.eval_expanded(&arguments[0])?;
         self.eval(&expression)
       }
 
@@ -670,7 +719,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
         while !matches!(current, LishpValue::Nil) {
           if let Some(form) = car(current) {
-            last_result = self.eval(form)?;
+            last_result = self.eval_expanded(form)?;
             if let Some(rest) = cdr(current) {
               current = rest;
             } else {
@@ -686,7 +735,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
       SpecialForm::Print => {
         let arguments = get_elements(tail, 1)?;
-        let value = self.eval(&arguments[0])?;
+        let value = self.eval_expanded(&arguments[0])?;
         self.io.println(&value.to_string())?;
         Ok(value)
       }
@@ -703,7 +752,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
       SpecialForm::Symbol => {
         let arguments = get_elements(tail, 1)?;
-        let value = self.eval(&arguments[0])?;
+        let value = self.eval_expanded(&arguments[0])?;
 
         match value {
           LishpValue::String(s) => Ok(LishpValue::Symbol { name: s }),
@@ -717,7 +766,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         let arguments = get_elements(tail, 2)?;
 
         if let LishpValue::Symbol { name } = &arguments[0] {
-          let value = self.eval(&arguments[1])?;
+          let value = self.eval_expanded(&arguments[1])?;
 
           if let LishpValue::Lambda { environment, .. } = &value {
             environment.borrow_mut().define(name, value.clone());
@@ -738,7 +787,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
             return Err(EvalError::UndefinedVariable(name.to_string()));
           }
 
-          let value = self.eval(&arguments[1])?;
+          let value = self.eval_expanded(&arguments[1])?;
           self.env.set(name, value)?;
           Ok(LishpValue::Nil)
         } else {
@@ -748,7 +797,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
       SpecialForm::Load => {
         let arguments = get_elements(tail, 1)?;
-        let path_value = self.eval(&arguments[0])?;
+        let path_value = self.eval_expanded(&arguments[0])?;
 
         let path = match path_value {
           LishpValue::String(s) => s.to_string(),
@@ -776,6 +825,14 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         }
 
         Ok(last_result)
+      }
+
+      SpecialForm::ExpandMacro => {
+        let arguments = get_elements(tail, 1)?;
+        let expr = &arguments[0];
+
+        let expander = MacroExpander::new(self.env);
+        expander.expand(expr)
       }
     }
   }
@@ -2027,9 +2084,7 @@ mod tests {
     let def_add = cons(
       LishpValue::SpecialForm(SpecialForm::Define),
       cons(
-        LishpValue::Symbol {
-          name: "add".into(),
-        },
+        LishpValue::Symbol { name: "add".into() },
         cons(add_lambda, LishpValue::Nil),
       ),
     );
@@ -2057,9 +2112,7 @@ mod tests {
     let def_all = cons(
       LishpValue::SpecialForm(SpecialForm::Define),
       cons(
-        LishpValue::Symbol {
-          name: "all".into(),
-        },
+        LishpValue::Symbol { name: "all".into() },
         cons(all_lambda, LishpValue::Nil),
       ),
     );
@@ -2067,9 +2120,7 @@ mod tests {
 
     // (def add-10 (add 10))
     let add_10_call = cons(
-      LishpValue::Symbol {
-        name: "add".into(),
-      },
+      LishpValue::Symbol { name: "add".into() },
       cons(LishpValue::Integer(10), LishpValue::Nil),
     );
     let add_10 = evaluator.eval(&add_10_call).unwrap();
@@ -2086,9 +2137,7 @@ mod tests {
 
     // (def all-10 (all 10))
     let all_10_call = cons(
-      LishpValue::Symbol {
-        name: "all".into(),
-      },
+      LishpValue::Symbol { name: "all".into() },
       cons(LishpValue::Integer(10), LishpValue::Nil),
     );
     let all_10 = evaluator.eval(&all_10_call).unwrap();

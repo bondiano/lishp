@@ -21,7 +21,9 @@ pub enum SpecialForm {
   Symbol,
   Lambda,
   Dambda,
+  Macro,
   Load,
+  ExpandMacro,
 }
 
 impl FromStr for SpecialForm {
@@ -45,6 +47,8 @@ impl FromStr for SpecialForm {
       "lambda" => Ok(SpecialForm::Lambda),
       "dambda" => Ok(SpecialForm::Dambda),
       "load" => Ok(SpecialForm::Load),
+      "macro" => Ok(SpecialForm::Macro),
+      "expand-macro" => Ok(SpecialForm::ExpandMacro),
       _ => Err(format!("Invalid special form: {}", value)),
     }
   }
@@ -69,6 +73,8 @@ impl fmt::Display for SpecialForm {
       SpecialForm::Lambda => write!(f, "lambda"),
       SpecialForm::Load => write!(f, "load"),
       SpecialForm::Dambda => write!(f, "dambda"),
+      SpecialForm::Macro => write!(f, "macro"),
+      SpecialForm::ExpandMacro => write!(f, "expand-macro"),
     }
   }
 }
@@ -157,6 +163,10 @@ pub enum LishpValue {
     environment: Rc<RefCell<Environment>>,
   },
   Dambda {
+    arguments: Vec<EcoString>,
+    body: Rc<LishpValue>,
+  },
+  Macro {
     arguments: Vec<EcoString>,
     body: Rc<LishpValue>,
   },
@@ -260,8 +270,27 @@ impl fmt::Display for LishpValue {
 
         write!(f, ")")
       }
-      LishpValue::Dambda { arguments, body }
-      | LishpValue::Lambda {
+      LishpValue::Macro { arguments, body } => {
+        write!(f, "(macro (")?;
+        for (idx, argument) in arguments.iter().enumerate() {
+          if idx > 0 {
+            write!(f, " ")?;
+          }
+          write!(f, "{}", argument)?;
+        }
+        write!(f, ") {})", body)
+      }
+      LishpValue::Dambda { arguments, body } => {
+        write!(f, "(dambda (")?;
+        for (idx, argument) in arguments.iter().enumerate() {
+          if idx > 0 {
+            write!(f, " ")?;
+          }
+          write!(f, "{}", argument)?;
+        }
+        write!(f, ") {})", body)
+      }
+      LishpValue::Lambda {
         arguments, body, ..
       } => {
         write!(f, "(lambda (")?;
