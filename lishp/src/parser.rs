@@ -173,6 +173,10 @@ fn parse_special_form(i: &str) -> IResult<&str, LishpValue> {
       parse_keyword("lambda"),
     ),
     value(
+      LishpValue::SpecialForm(SpecialForm::Lambda),
+      parse_keyword("λ"),
+    ),
+    value(
       LishpValue::SpecialForm(SpecialForm::Dambda),
       parse_keyword("dambda"),
     ),

@@ -7,4 +7,3 @@ Simple edu LISP implementation
 ```bash
 cargo run --bin lishp
 ```
-

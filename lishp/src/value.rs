@@ -250,6 +250,12 @@ impl fmt::Display for LishpValue {
     match self {
       LishpValue::Integer(value) => write!(f, "{}", value),
       LishpValue::Double(value) => write!(f, "{}", value),
+      LishpValue::Symbol { name } => write!(f, "{}", name),
+      LishpValue::Bool(value) => write!(f, "{}", value),
+      LishpValue::Nil => write!(f, "nil"),
+      LishpValue::SpecialForm(value) => write!(f, "{}", value),
+      LishpValue::BinaryOperator(value) => write!(f, "{}", value),
+      LishpValue::BinaryPredicate(value) => write!(f, "{}", value),
       LishpValue::String(value) => {
         write!(f, "\"")?;
         for c in value.chars() {
@@ -264,12 +270,6 @@ impl fmt::Display for LishpValue {
         }
         write!(f, "\"")
       }
-      LishpValue::Symbol { name } => write!(f, "{}", name),
-      LishpValue::Bool(value) => write!(f, "{}", value),
-      LishpValue::Nil => write!(f, "nil"),
-      LishpValue::SpecialForm(value) => write!(f, "{}", value),
-      LishpValue::BinaryOperator(value) => write!(f, "{}", value),
-      LishpValue::BinaryPredicate(value) => write!(f, "{}", value),
       LishpValue::Cons(_, _) => {
         write!(f, "(")?;
 
