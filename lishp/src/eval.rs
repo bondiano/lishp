@@ -292,6 +292,19 @@ fn eval_binary_operator(
         right_type,
       }),
     },
+    BinaryOperator::Pow => match (&left, &right) {
+      (LishpValue::Integer(base), LishpValue::Integer(exponent)) => {
+        Ok(LishpValue::Integer(base.pow(*exponent as u32)))
+      },
+      (LishpValue::Double(base), LishpValue::Double(exponent)) => {
+        Ok(LishpValue::Double(base.powf(*exponent)))
+      },
+      _ => Err(EvalError::InvalidBinaryOperator {
+        operator,
+        left_type,
+        right_type,
+      }),
+    }
     BinaryOperator::StrConcat => {
       let left_str = repr_to_str(&left);
       let right_str = repr_to_str(&right);
@@ -1353,13 +1366,13 @@ mod tests {
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-    // Список аргументов: (x y)
+    // (x y)
     let args = cons(
       LishpValue::Symbol { name: "x".into() },
       cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
     );
 
-    // Тело: (_+_ x y)
+    // (_+_ x y)
     let body = cons(
       LishpValue::BinaryOperator(BinaryOperator::Add),
       cons(
@@ -1391,19 +1404,18 @@ mod tests {
 
   #[test]
   fn test_eval_lambda_currying() {
-    // ((lambda (x y) (_+_ x y)) 2) вызванная с недостаточным количеством аргументов
-    // должна вернуть частично примененную lambda
+    // ((lambda (x y) (_+_ x y)) 2)
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-    // Список аргументов: (x y)
+    // (x y)
     let args = cons(
       LishpValue::Symbol { name: "x".into() },
       cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
     );
 
-    // Тело: (_+_ x y)
+    // (_+_ x y)
     let body = cons(
       LishpValue::BinaryOperator(BinaryOperator::Add),
       cons(
@@ -1420,12 +1432,10 @@ mod tests {
 
     let lambda = evaluator.eval(&lambda_expr).unwrap();
 
-    // Вызываем lambda с одним аргументом (2)
     let partial_call = cons(lambda, cons(LishpValue::Integer(2), LishpValue::Nil));
 
     let partial_lambda = evaluator.eval(&partial_call).unwrap();
 
-    // Проверяем, что это Lambda
     match &partial_lambda {
       LishpValue::Lambda { arguments, .. } => {
         assert_eq!(arguments.len(), 1);
@@ -1434,7 +1444,6 @@ mod tests {
       _ => panic!("Expected Lambda, got {:?}", partial_lambda),
     }
 
-    // Теперь вызываем частично примененную lambda с оставшимся аргументом (3)
     let final_call = cons(
       partial_lambda,
       cons(LishpValue::Integer(3), LishpValue::Nil),
@@ -1445,12 +1454,12 @@ mod tests {
 
   #[test]
   fn test_eval_lambda_currying_three_args() {
-    // (lambda (x y z) (_+_ (_+_ x y) z)) с каррированием
+    // (lambda (x y z) (_+_ (_+_ x y) z)) with currying
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-    // Список аргументов: (x y z)
+    // (x y z)
     let args = cons(
       LishpValue::Symbol { name: "x".into() },
       cons(
@@ -1459,7 +1468,7 @@ mod tests {
       ),
     );
 
-    // Тело: (_+_ (_+_ x y) z)
+    // (_+_ (_+_ x y) z)
     let inner_add = cons(
       LishpValue::BinaryOperator(BinaryOperator::Add),
       cons(
@@ -1483,15 +1492,12 @@ mod tests {
 
     let lambda = evaluator.eval(&lambda_expr).unwrap();
 
-    // Передаем один аргумент
     let partial1 = cons(lambda, cons(LishpValue::Integer(1), LishpValue::Nil));
     let lambda1 = evaluator.eval(&partial1).unwrap();
 
-    // Передаем второй аргумент
     let partial2 = cons(lambda1, cons(LishpValue::Integer(2), LishpValue::Nil));
     let lambda2 = evaluator.eval(&partial2).unwrap();
 
-    // Передаем третий аргумент
     let final_call = cons(lambda2, cons(LishpValue::Integer(3), LishpValue::Nil));
     let result = evaluator.eval(&final_call).unwrap();
 
@@ -1524,7 +1530,7 @@ mod tests {
 
     let lambda = evaluator.eval(&lambda_expr).unwrap();
 
-    // Вызываем lambda с аргументами (1 2 3 4 5)
+    // (1 2 3 4 5)
     let call_expr = cons(
       lambda,
       cons(
@@ -1560,16 +1566,14 @@ mod tests {
 
   #[test]
   fn test_eval_lambda_variadic_single_param() {
-    // (lambda (x) x) вызванная с (1 2 3)
+    // (lambda (x) x) with (1 2 3)
     // x = (1 2 3)
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-    // Список аргументов: (x)
     let args = cons(LishpValue::Symbol { name: "x".into() }, LishpValue::Nil);
 
-    // Тело: x
     let body = LishpValue::Symbol { name: "x".into() };
 
     // (lambda (x) x)
@@ -1580,7 +1584,6 @@ mod tests {
 
     let lambda = evaluator.eval(&lambda_expr).unwrap();
 
-    // Вызываем lambda с аргументами (1 2 3)
     let call_expr = cons(
       lambda,
       cons(
@@ -1594,7 +1597,6 @@ mod tests {
 
     let result = evaluator.eval(&call_expr).unwrap();
 
-    // x должен быть списком (1 2 3)
     let expected = cons(
       LishpValue::Integer(1),
       cons(
@@ -1607,14 +1609,12 @@ mod tests {
 
   #[test]
   fn test_eval_lambda_variadic_with_car() {
-    // (lambda (x rest) x) вызванная с (10 20 30 40)
+    // (lambda (x rest) x) with (10 20 30 40)
     // x = 10, rest = (20 30 40)
-    // Проверяем, что можем использовать car на rest
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-    // Список аргументов: (x rest)
     let args = cons(
       LishpValue::Symbol { name: "x".into() },
       cons(
@@ -1625,7 +1625,6 @@ mod tests {
       ),
     );
 
-    // Тело: (car rest)
     let body = cons(
       LishpValue::SpecialForm(SpecialForm::Car),
       cons(
@@ -1644,7 +1643,6 @@ mod tests {
 
     let lambda = evaluator.eval(&lambda_expr).unwrap();
 
-    // Вызываем lambda с аргументами (10 20 30 40)
     let call_expr = cons(
       lambda,
       cons(

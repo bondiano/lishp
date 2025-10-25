@@ -86,6 +86,7 @@ pub enum BinaryOperator {
   Multiply,
   Divide,
   Modulo,
+  Pow,
   StrConcat,
 }
 
@@ -113,6 +114,7 @@ impl fmt::Display for BinaryOperator {
       BinaryOperator::Multiply => write!(f, "_*_"),
       BinaryOperator::Divide => write!(f, "_/_"),
       BinaryOperator::Modulo => write!(f, "_%_"),
+      BinaryOperator::Pow => write!(f, "_**_"),
       BinaryOperator::StrConcat => write!(f, "_++_"),
     }
   }
@@ -323,8 +325,8 @@ impl fmt::Display for LishpValue {
   }
 }
 
-pub fn cons(a: LishpValue, b: LishpValue) -> LishpValue {
-  LishpValue::Cons(Rc::new(a), Rc::new(b))
+pub fn cons(head: LishpValue, tail: LishpValue) -> LishpValue {
+  LishpValue::Cons(Rc::new(head), Rc::new(tail))
 }
 
 pub fn car(list: &LishpValue) -> Option<&LishpValue> {
