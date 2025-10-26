@@ -94,8 +94,8 @@ impl From<std::io::Error> for EvalError {
   }
 }
 
-impl From<crate::parser::ParseError> for EvalError {
-  fn from(err: crate::parser::ParseError) -> Self {
+impl From<parser::ParseError> for EvalError {
+  fn from(err: parser::ParseError) -> Self {
     EvalError::ParseError(format!("{:?}", err))
   }
 }

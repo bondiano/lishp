@@ -101,7 +101,7 @@ fn parse_keyword(keyword: &'static str) -> impl Fn(&str) -> IResult<&str, &str> 
     if let Some(next_char) = rest.chars().next()
       && is_symbol_char(next_char)
     {
-      return Err(nom::Err::Error(nom::error::Error::new(
+      return Err(Err::Error(nom::error::Error::new(
         i,
         nom::error::ErrorKind::Tag,
       )));
@@ -253,7 +253,7 @@ fn parse_string_content(i: &str) -> IResult<&str, String> {
     }
 
     if input.is_empty() {
-      return Err(nom::Err::Error(nom::error::Error::new(
+      return Err(Err::Error(nom::error::Error::new(
         input,
         nom::error::ErrorKind::Eof,
       )));
@@ -275,14 +275,14 @@ fn parse_string_content(i: &str) -> IResult<&str, String> {
           result.push(ch);
           input = &input[c.len_utf8()..];
         } else {
-          return Err(nom::Err::Error(nom::error::Error::new(
+          return Err(Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Eof,
           )));
         }
       }
       _ => {
-        return Err(nom::Err::Error(nom::error::Error::new(
+        return Err(Err::Error(nom::error::Error::new(
           input,
           nom::error::ErrorKind::Char,
         )));
@@ -317,7 +317,7 @@ fn parse_symbol(i: &str) -> IResult<&str, LishpValue> {
   if let Some(first_char) = i.chars().next()
     && first_char.is_ascii_digit()
   {
-    return Err(nom::Err::Error(nom::error::Error::new(
+    return Err(Err::Error(nom::error::Error::new(
       i,
       nom::error::ErrorKind::Alpha,
     )));
@@ -352,14 +352,14 @@ fn parse_quoted(i: &str) -> IResult<&str, LishpValue> {
 
   let (after_ws, _) = skip_ws_and_comments(rest)?;
   if after_ws.is_empty() {
-    return Err(nom::Err::Failure(nom::error::Error::new(
+    return Err(Err::Failure(nom::error::Error::new(
       i,
       nom::error::ErrorKind::Eof,
     )));
   }
 
   if let Some(')') = after_ws.chars().next() {
-    return Err(nom::Err::Failure(nom::error::Error::new(
+    return Err(Err::Failure(nom::error::Error::new(
       i,
       nom::error::ErrorKind::Tag,
     )));
@@ -412,6 +412,33 @@ pub enum ParseError {
   Incomplete,
   UnmatchedClosing,
   Error(String),
+}
+
+fn handle_parse_result<'a>(
+  trimmed: &'a str,
+  result: IResult<&'a str, LishpValue>,
+) -> Result<Option<(LishpValue, &'a str)>, ParseError> {
+  match result {
+    Ok((remaining, value)) => Ok(Some((value, remaining))),
+    Err(Err::Error(_)) | Err(Err::Failure(_)) => {
+      let has_quote_error = trimmed.starts_with('\'')
+        || trimmed.contains("')")
+        || trimmed.chars().any(|c| c == '\'') && trimmed.chars().filter(|c| *c == ')').count() > 0;
+
+      let error_msg = if has_quote_error {
+        "Expected valid expression after quote ('), but found nothing or invalid syntax"
+      } else {
+        "Parse error: invalid syntax"
+      };
+
+      Err(ParseError::Error(format!(
+        "{} at position: {}",
+        error_msg,
+        trimmed.get(..20).unwrap_or(trimmed)
+      )))
+    }
+    Err(Err::Incomplete(_)) => Err(ParseError::Incomplete),
+  }
 }
 
 enum BalanceState {
@@ -472,27 +499,7 @@ pub fn parse(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError> {
     BalanceState::Balanced => {}
   }
 
-  match parse_value(trimmed) {
-    Ok((remaining, value)) => Ok(Some((value, remaining))),
-    Err(Err::Error(_)) | Err(Err::Failure(_)) => {
-      let has_quote_error = trimmed.starts_with('\'')
-        || trimmed.contains("')")
-        || trimmed.chars().any(|c| c == '\'') && trimmed.chars().filter(|c| *c == ')').count() > 0;
-
-      let error_msg = if has_quote_error {
-        "Expected valid expression after quote ('), but found nothing or invalid syntax"
-      } else {
-        "Parse error: invalid syntax"
-      };
-
-      Err(ParseError::Error(format!(
-        "{} at position: {}",
-        error_msg,
-        trimmed.get(..20).unwrap_or(trimmed)
-      )))
-    }
-    Err(Err::Incomplete(_)) => Err(ParseError::Incomplete),
-  }
+  handle_parse_result(trimmed, parse_value(trimmed))
 }
 
 pub fn parse_repl(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError> {
@@ -511,27 +518,7 @@ pub fn parse_repl(input: &str) -> Result<Option<(LishpValue, &str)>, ParseError>
     BalanceState::Balanced => {}
   }
 
-  match parse_value(trimmed) {
-    Ok((remaining, value)) => Ok(Some((value, remaining))),
-    Err(Err::Error(_)) | Err(Err::Failure(_)) => {
-      let has_quote_error = trimmed.starts_with('\'')
-        || trimmed.contains("')")
-        || trimmed.chars().any(|c| c == '\'') && trimmed.chars().filter(|c| *c == ')').count() > 0;
-
-      let error_msg = if has_quote_error {
-        "Expected valid expression after quote ('), but found nothing or invalid syntax"
-      } else {
-        "Parse error: invalid syntax"
-      };
-
-      Err(ParseError::Error(format!(
-        "{} at position: {}",
-        error_msg,
-        trimmed.get(..20).unwrap_or(trimmed)
-      )))
-    }
-    Err(Err::Incomplete(_)) => Err(ParseError::Incomplete),
-  }
+  handle_parse_result(trimmed, parse_value(trimmed))
 }
 
 #[cfg(test)]
