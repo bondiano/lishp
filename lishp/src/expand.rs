@@ -25,9 +25,13 @@ impl<'env> MacroExpander<'env> {
         let tail = cdr(value).ok_or(EvalError::EvalNil)?;
 
         if let LishpValue::Symbol { name } = head
-          && let Some(LishpValue::Macro { arguments, body }) = self.env.get(name)
+          && let Some(LishpValue::Macro {
+            arguments,
+            variadic_arg,
+            body,
+          }) = self.env.get(name)
         {
-          let expanded = self.expand_macro(&arguments, &body, tail)?;
+          let expanded = self.expand_macro(&arguments, variadic_arg.as_ref(), &body, tail)?;
           return self.expand(&expanded);
         }
 
@@ -55,6 +59,7 @@ impl<'env> MacroExpander<'env> {
   fn expand_macro(
     &self,
     parameters: &[EcoString],
+    variadic_param: Option<&EcoString>,
     body: &LishpValue,
     args: &LishpValue,
   ) -> Result<LishpValue, EvalError> {
@@ -70,17 +75,36 @@ impl<'env> MacroExpander<'env> {
       }
     }
 
-    if arg_values.len() != parameters.len() {
-      return Err(EvalError::WrongArgumentCount {
-        form: "macro".to_string(),
-        expected: parameters.len(),
-        got: arg_values.len(),
-      });
+    if let Some(_) = variadic_param {
+      if arg_values.len() < parameters.len() {
+        return Err(EvalError::WrongArgumentCount {
+          form: "macro".to_string(),
+          expected: parameters.len(),
+          got: arg_values.len(),
+        });
+      }
+    } else {
+      if arg_values.len() != parameters.len() {
+        return Err(EvalError::WrongArgumentCount {
+          form: "macro".to_string(),
+          expected: parameters.len(),
+          got: arg_values.len(),
+        });
+      }
     }
 
     let mut substitutions = HashMap::new();
     for (param, arg) in parameters.iter().zip(arg_values.iter()) {
       substitutions.insert(param.clone(), arg.clone());
+    }
+
+    // Handle variadic parameter if present
+    if let Some(variadic_name) = variadic_param {
+      let rest_args = arg_values[parameters.len()..]
+        .iter()
+        .rev()
+        .fold(LishpValue::Nil, |acc, arg| cons(arg.clone(), acc));
+      substitutions.insert(variadic_name.clone(), rest_args);
     }
 
     Self::substitute(body, &substitutions)
@@ -136,6 +160,7 @@ mod tests {
 
     let macro_value = LishpValue::Macro {
       arguments: vec!["x".into()],
+      variadic_arg: None,
       body: Rc::new(LishpValue::Symbol { name: "x".into() }),
     };
     env.define("my-macro", macro_value);
@@ -163,6 +188,7 @@ mod tests {
 
     let macro_value = LishpValue::Macro {
       arguments: vec!["cond".into(), "then".into(), "else".into()],
+      variadic_arg: None,
       body: Rc::new(if_expr),
     };
     env.define("unless", macro_value);
@@ -183,6 +209,7 @@ mod tests {
     // (def id (macro (x) x))
     let id_macro = LishpValue::Macro {
       arguments: vec!["x".into()],
+      variadic_arg: None,
       body: Rc::new(LishpValue::Symbol { name: "x".into() }),
     };
     env.define("id", id_macro);
@@ -191,6 +218,7 @@ mod tests {
     let wrap_body = lishp_list![sym!("id"), sym!("x")];
     let wrap_macro = LishpValue::Macro {
       arguments: vec!["x".into()],
+      variadic_arg: None,
       body: Rc::new(wrap_body),
     };
     env.define("wrap", wrap_macro);
@@ -218,6 +246,7 @@ mod tests {
 
     let macro_value = LishpValue::Macro {
       arguments: vec!["x".into()],
+      variadic_arg: None,
       body: Rc::new(add_expr),
     };
     env.define("add-one", macro_value);
@@ -237,6 +266,7 @@ mod tests {
 
     let macro_value = LishpValue::Macro {
       arguments: vec!["x".into(), "y".into()],
+      variadic_arg: None,
       body: Rc::new(sym!("x").into()),
     };
     env.define("my-macro", macro_value);

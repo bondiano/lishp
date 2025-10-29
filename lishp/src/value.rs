@@ -23,6 +23,7 @@ pub enum SpecialForm {
   Dambda,
   Macro,
   Load,
+  Raise,
   ExpandMacro,
 }
 
@@ -49,6 +50,7 @@ impl FromStr for SpecialForm {
       "load" => Ok(SpecialForm::Load),
       "macro" => Ok(SpecialForm::Macro),
       "expand-macro" => Ok(SpecialForm::ExpandMacro),
+      "raise" => Ok(SpecialForm::Raise),
       _ => Err(format!("Invalid special form: {}", value)),
     }
   }
@@ -75,6 +77,7 @@ impl fmt::Display for SpecialForm {
       SpecialForm::Dambda => write!(f, "dambda"),
       SpecialForm::Macro => write!(f, "macro"),
       SpecialForm::ExpandMacro => write!(f, "expand-macro"),
+      SpecialForm::Raise => write!(f, "raise"),
     }
   }
 }
@@ -143,8 +146,8 @@ impl FromStr for BinaryPredicate {
 impl fmt::Display for BinaryPredicate {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      BinaryPredicate::Equals => write!(f, "_=__"),
       BinaryPredicate::LessThan => write!(f, "_<_"),
+      BinaryPredicate::Equals => write!(f, "_=_"),
       BinaryPredicate::GreaterThan => write!(f, "_>_"),
     }
   }
@@ -161,15 +164,18 @@ pub enum LishpValue {
   Bool(bool),
   Lambda {
     arguments: Vec<EcoString>,
+    variadic_arg: Option<EcoString>,
     body: Rc<LishpValue>,
     environment: Rc<RefCell<Environment>>,
   },
   Dambda {
     arguments: Vec<EcoString>,
+    variadic_arg: Option<EcoString>,
     body: Rc<LishpValue>,
   },
   Macro {
     arguments: Vec<EcoString>,
+    variadic_arg: Option<EcoString>,
     body: Rc<LishpValue>,
   },
   Nil,
@@ -289,7 +295,11 @@ impl fmt::Display for LishpValue {
 
         write!(f, ")")
       }
-      LishpValue::Macro { arguments, body } => {
+      LishpValue::Macro {
+        arguments,
+        variadic_arg,
+        body,
+      } => {
         write!(f, "(macro (")?;
         for (idx, argument) in arguments.iter().enumerate() {
           if idx > 0 {
@@ -297,9 +307,19 @@ impl fmt::Display for LishpValue {
           }
           write!(f, "{}", argument)?;
         }
+        if let Some(variadic) = variadic_arg {
+          if !arguments.is_empty() {
+            write!(f, " ")?;
+          }
+          write!(f, ". {}", variadic)?;
+        }
         write!(f, ") {})", body)
       }
-      LishpValue::Dambda { arguments, body } => {
+      LishpValue::Dambda {
+        arguments,
+        variadic_arg,
+        body,
+      } => {
         write!(f, "(dambda (")?;
         for (idx, argument) in arguments.iter().enumerate() {
           if idx > 0 {
@@ -307,10 +327,19 @@ impl fmt::Display for LishpValue {
           }
           write!(f, "{}", argument)?;
         }
+        if let Some(variadic) = variadic_arg {
+          if !arguments.is_empty() {
+            write!(f, " ")?;
+          }
+          write!(f, ". {}", variadic)?;
+        }
         write!(f, ") {})", body)
       }
       LishpValue::Lambda {
-        arguments, body, ..
+        arguments,
+        variadic_arg,
+        body,
+        ..
       } => {
         write!(f, "(lambda (")?;
         for (idx, argument) in arguments.iter().enumerate() {
@@ -318,6 +347,12 @@ impl fmt::Display for LishpValue {
             write!(f, " ")?;
           }
           write!(f, "{}", argument)?;
+        }
+        if let Some(variadic) = variadic_arg {
+          if !arguments.is_empty() {
+            write!(f, " ")?;
+          }
+          write!(f, ". {}", variadic)?;
         }
         write!(f, ") {})", body)
       }

@@ -1,4 +1,6 @@
 /target
+/.lsp
+/.clj-kondo
 
 .DS_Store
 .vscode

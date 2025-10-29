@@ -92,6 +92,8 @@ fn is_symbol_char(c: char) -> bool {
     || c == '>'
     || c == '?'
     || c == '!'
+    || c == '\\'
+    || c == '.'
 }
 
 #[inline]
@@ -187,6 +189,10 @@ fn parse_special_form(i: &str) -> IResult<&str, LishpValue> {
     value(
       LishpValue::SpecialForm(SpecialForm::ExpandMacro),
       parse_keyword("expand-macro"),
+    ),
+    value(
+      LishpValue::SpecialForm(SpecialForm::Raise),
+      parse_keyword("raise"),
     ),
   ))
   .parse(i)
@@ -365,7 +371,7 @@ fn parse_quoted(i: &str) -> IResult<&str, LishpValue> {
     )));
   }
 
-  let (rest, expr) = parse_value(rest)?;
+  let (rest, expr) = parse_value(after_ws)?;
 
   Ok((
     rest,
@@ -645,6 +651,27 @@ mod tests {
       Some((
         LishpValue::Symbol {
           name: "define".into()
+        },
+        ""
+      ))
+    );
+  }
+
+  #[test]
+  fn test_parse_symbol_with_backslash() {
+    assert_eq!(
+      parse("\\n").expect("Failed to parse symbol \\n"),
+      Some((LishpValue::Symbol { name: "\\n".into() }, ""))
+    );
+    assert_eq!(
+      parse("\\t").expect("Failed to parse symbol \\t"),
+      Some((LishpValue::Symbol { name: "\\t".into() }, ""))
+    );
+    assert_eq!(
+      parse("foo\\bar").expect("Failed to parse symbol foo\\bar"),
+      Some((
+        LishpValue::Symbol {
+          name: "foo\\bar".into()
         },
         ""
       ))

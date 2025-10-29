@@ -40,8 +40,8 @@ pub enum EvalError {
     got: usize,
   },
 
-  #[error("Extra elements in list")]
-  ExtraElements,
+  #[error("Extra elements: {0}")]
+  ExtraElements(String),
 
   #[error("Missing elements in list: expected {expected}, got {got}")]
   MissingElements { expected: usize, got: usize },
@@ -86,6 +86,9 @@ pub enum EvalError {
 
   #[error("Unsupported feature: {0}")]
   UnsupportedFeature(String),
+
+  #[error("Runtime error: {0}")]
+  RuntimeError(String),
 }
 
 impl From<std::io::Error> for EvalError {
@@ -184,7 +187,7 @@ fn get_elements(mut value: &LishpValue, count: usize) -> Result<Vec<LishpValue>,
   }
 
   if !matches!(value, LishpValue::Nil) {
-    return Err(EvalError::ExtraElements);
+    return Err(EvalError::ExtraElements(value.to_string()));
   }
 
   if elements.len() < count {
@@ -202,6 +205,88 @@ fn repr_to_str(value: &LishpValue) -> String {
     LishpValue::String(string) => string.to_string(),
     _ => value.to_string(),
   }
+}
+
+fn parse_arguments(
+  args_list: &LishpValue,
+  form_name: &str,
+) -> Result<(Vec<EcoString>, Option<EcoString>), EvalError> {
+  let mut arguments = Vec::new();
+  let mut variadic_arg = None;
+  let mut current = args_list;
+  let mut found_dot = false;
+
+  while !matches!(current, LishpValue::Nil) {
+    if let Some(head) = car(current) {
+      match head {
+        LishpValue::Symbol { name } if name.as_str() == "." => {
+          if found_dot {
+            return Err(EvalError::TypeError(format!(
+              "{} argument list can only have one '.'",
+              form_name
+            )));
+          }
+          found_dot = true;
+
+          if let Some(tail) = cdr(current) {
+            if matches!(tail, LishpValue::Nil) {
+              return Err(EvalError::TypeError(format!(
+                "{} expects a symbol after '.'",
+                form_name
+              )));
+            }
+
+            if let Some(variadic_name) = car(tail) {
+              match variadic_name {
+                LishpValue::Symbol { name } => {
+                  variadic_arg = Some(name.clone());
+                  if let Some(after_variadic) = cdr(tail) {
+                    if !matches!(after_variadic, LishpValue::Nil) {
+                      return Err(EvalError::TypeError(format!(
+                        "{} cannot have arguments after variadic parameter",
+                        form_name
+                      )));
+                    }
+                  }
+                  break;
+                }
+                _ => {
+                  return Err(EvalError::TypeError(format!(
+                    "{} variadic parameter must be a symbol, got: {}",
+                    form_name, variadic_name
+                  )));
+                }
+              }
+            }
+          }
+        }
+        LishpValue::Symbol { name } => {
+          if found_dot {
+            return Err(EvalError::TypeError(format!(
+              "{} unexpected symbol after '.'",
+              form_name
+            )));
+          }
+          arguments.push(name.clone())
+        }
+        _ => {
+          return Err(EvalError::TypeError(format!(
+            "{} argument must be a symbol, got: {}",
+            form_name, head
+          )));
+        }
+      }
+      if let Some(tail) = cdr(current) {
+        current = tail;
+      } else {
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+
+  Ok((arguments, variadic_arg))
 }
 
 fn eval_binary_operator(
@@ -295,16 +380,16 @@ fn eval_binary_operator(
     BinaryOperator::Pow => match (&left, &right) {
       (LishpValue::Integer(base), LishpValue::Integer(exponent)) => {
         Ok(LishpValue::Integer(base.pow(*exponent as u32)))
-      },
+      }
       (LishpValue::Double(base), LishpValue::Double(exponent)) => {
         Ok(LishpValue::Double(base.powf(*exponent)))
-      },
+      }
       _ => Err(EvalError::InvalidBinaryOperator {
         operator,
         left_type,
         right_type,
       }),
-    }
+    },
     BinaryOperator::StrConcat => {
       let left_str = repr_to_str(&left);
       let right_str = repr_to_str(&right);
@@ -421,6 +506,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
           LishpValue::Lambda {
             arguments,
+            variadic_arg,
             body,
             environment,
           } => {
@@ -429,50 +515,64 @@ impl<'io, 'env> Evaluator<'io, 'env> {
             let mut current_tail = tail;
 
             for (idx, param_name) in arguments.iter().enumerate() {
-              let is_last_param = idx == param_count - 1;
-
               if matches!(current_tail, LishpValue::Nil) {
                 let remaining_args = arguments[idx..].to_vec();
 
                 return Ok(LishpValue::Lambda {
                   arguments: remaining_args,
+                  variadic_arg: variadic_arg.clone(),
                   body: body.clone(),
                   environment: Rc::new(RefCell::new(lambda_env)),
                 });
               }
 
               let arg_value = car(current_tail).unwrap(); // safe: Nil checked above
-              let next_tail = cdr(current_tail).unwrap_or(&LishpValue::Nil);
+              let evaluated_arg = self.eval_expanded(arg_value)?;
+              lambda_env.define(param_name, evaluated_arg);
+              current_tail = cdr(current_tail).unwrap_or(&LishpValue::Nil);
+            }
 
-              if is_last_param && !matches!(next_tail, LishpValue::Nil) {
-                let mut rest_args = Vec::new();
-                let mut rest_tail = current_tail;
+            if let Some(variadic_name) = variadic_arg {
+              let mut rest_args = Vec::new();
 
-                while !matches!(rest_tail, LishpValue::Nil) {
-                  if let Some(arg_val) = car(rest_tail) {
-                    rest_args.push(self.eval_expanded(arg_val)?);
-                  }
-                  rest_tail = cdr(rest_tail).unwrap_or(&LishpValue::Nil);
+              while !matches!(current_tail, LishpValue::Nil) {
+                if let Some(arg_val) = car(current_tail) {
+                  rest_args.push(self.eval_expanded(arg_val)?);
                 }
-
-                let rest_list = rest_args
-                  .into_iter()
-                  .rev()
-                  .fold(LishpValue::Nil, |acc, item| cons(item, acc));
-
-                lambda_env.define(param_name, rest_list);
-              } else {
-                let evaluated_arg = self.eval_expanded(arg_value)?;
-                lambda_env.define(param_name, evaluated_arg);
-                current_tail = next_tail;
+                current_tail = cdr(current_tail).unwrap_or(&LishpValue::Nil);
               }
+
+              let rest_list = rest_args
+                .into_iter()
+                .rev()
+                .fold(LishpValue::Nil, |acc, item| cons(item, acc));
+
+              lambda_env.define(&variadic_name, rest_list);
+            } else if !matches!(current_tail, LishpValue::Nil) {
+              // Extra arguments without variadic parameter - count them
+              let mut extra_count = 0;
+              let mut temp_tail = current_tail;
+              while !matches!(temp_tail, LishpValue::Nil) {
+                extra_count += 1;
+                temp_tail = cdr(temp_tail).unwrap_or(&LishpValue::Nil);
+              }
+
+              return Err(EvalError::WrongArgumentCount {
+                form: "lambda".to_string(),
+                expected: param_count,
+                got: param_count + extra_count,
+              });
             }
 
             let mut lambda_evaluator = Evaluator::with_environment(self.io, &mut lambda_env);
             lambda_evaluator.eval_expanded(&body)
           }
 
-          LishpValue::Dambda { arguments, body } => {
+          LishpValue::Dambda {
+            arguments,
+            variadic_arg,
+            body,
+          } => {
             let mut dambda_env = Environment::new();
             dambda_env.parent = Some(Rc::new(RefCell::new(self.env.clone())));
 
@@ -480,8 +580,6 @@ impl<'io, 'env> Evaluator<'io, 'env> {
             let param_count = arguments.len();
 
             for (idx, param_name) in arguments.iter().enumerate() {
-              let is_last_param = idx == param_count - 1;
-
               if matches!(current_tail, LishpValue::Nil) {
                 return Err(EvalError::WrongArgumentCount {
                   form: "dambda".to_string(),
@@ -491,30 +589,40 @@ impl<'io, 'env> Evaluator<'io, 'env> {
               }
 
               let arg_value = car(current_tail).unwrap();
-              let next_tail = cdr(current_tail).unwrap_or(&LishpValue::Nil);
+              let evaluated_arg = self.eval_expanded(arg_value)?;
+              dambda_env.define(param_name, evaluated_arg);
+              current_tail = cdr(current_tail).unwrap_or(&LishpValue::Nil);
+            }
 
-              if is_last_param && !matches!(next_tail, LishpValue::Nil) {
-                let mut rest_args = Vec::new();
-                let mut rest_tail = current_tail;
+            if let Some(variadic_name) = variadic_arg {
+              let mut rest_args = Vec::new();
 
-                while !matches!(rest_tail, LishpValue::Nil) {
-                  if let Some(arg_val) = car(rest_tail) {
-                    rest_args.push(self.eval_expanded(arg_val)?);
-                  }
-                  rest_tail = cdr(rest_tail).unwrap_or(&LishpValue::Nil);
+              while !matches!(current_tail, LishpValue::Nil) {
+                if let Some(arg_val) = car(current_tail) {
+                  rest_args.push(self.eval_expanded(arg_val)?);
                 }
-
-                let rest_list = rest_args
-                  .into_iter()
-                  .rev()
-                  .fold(LishpValue::Nil, |acc, item| cons(item, acc));
-
-                dambda_env.define(param_name, rest_list);
-              } else {
-                let evaluated_arg = self.eval_expanded(arg_value)?;
-                dambda_env.define(param_name, evaluated_arg);
-                current_tail = next_tail;
+                current_tail = cdr(current_tail).unwrap_or(&LishpValue::Nil);
               }
+
+              let rest_list = rest_args
+                .into_iter()
+                .rev()
+                .fold(LishpValue::Nil, |acc, item| cons(item, acc));
+
+              dambda_env.define(&variadic_name, rest_list);
+            } else if !matches!(current_tail, LishpValue::Nil) {
+              let mut extra_count = 0;
+              let mut temp_tail = current_tail;
+              while !matches!(temp_tail, LishpValue::Nil) {
+                extra_count += 1;
+                temp_tail = cdr(temp_tail).unwrap_or(&LishpValue::Nil);
+              }
+
+              return Err(EvalError::WrongArgumentCount {
+                form: "dambda".to_string(),
+                expected: param_count,
+                got: param_count + extra_count,
+              });
             }
 
             let mut dambda_evaluator = Evaluator::with_environment(self.io, &mut dambda_env);
@@ -549,33 +657,13 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           )));
         }
 
-        let mut arguments = Vec::new();
-        let mut current = args_list;
-        while !matches!(current, LishpValue::Nil) {
-          if let Some(head) = car(current) {
-            match head {
-              LishpValue::Symbol { name } => arguments.push(name.clone()),
-              _ => {
-                return Err(EvalError::TypeError(format!(
-                  "lambda argument must be a symbol, got: {}",
-                  head
-                )));
-              }
-            }
-            if let Some(tail) = cdr(current) {
-              current = tail;
-            } else {
-              break;
-            }
-          } else {
-            break;
-          }
-        }
+        let (arguments, variadic_arg) = parse_arguments(args_list, "lambda")?;
 
         let environment = self.env.clone();
 
         Ok(LishpValue::Lambda {
           arguments,
+          variadic_arg,
           body: Rc::new(body.clone()),
           environment: Rc::new(RefCell::new(environment)),
         })
@@ -594,31 +682,11 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           )));
         }
 
-        let mut arguments = Vec::new();
-        let mut current = args_list;
-        while !matches!(current, LishpValue::Nil) {
-          if let Some(head) = car(current) {
-            match head {
-              LishpValue::Symbol { name } => arguments.push(name.clone()),
-              _ => {
-                return Err(EvalError::TypeError(format!(
-                  "dambda argument must be a symbol, got: {}",
-                  head
-                )));
-              }
-            }
-            if let Some(tail) = cdr(current) {
-              current = tail;
-            } else {
-              break;
-            }
-          } else {
-            break;
-          }
-        }
+        let (arguments, variadic_arg) = parse_arguments(args_list, "dambda")?;
 
         Ok(LishpValue::Dambda {
           arguments,
+          variadic_arg,
           body: Rc::new(body.clone()),
         })
       }
@@ -635,31 +703,11 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           )));
         }
 
-        let mut arguments = Vec::new();
-        let mut current = args_list;
-        while !matches!(current, LishpValue::Nil) {
-          if let Some(head) = car(current) {
-            match head {
-              LishpValue::Symbol { name } => arguments.push(name.clone()),
-              _ => {
-                return Err(EvalError::TypeError(format!(
-                  "macro argument must be a symbol, got: {}",
-                  head
-                )));
-              }
-            }
-            if let Some(tail) = cdr(current) {
-              current = tail;
-            } else {
-              break;
-            }
-          } else {
-            break;
-          }
-        }
+        let (arguments, variadic_arg) = parse_arguments(args_list, "macro")?;
 
         Ok(LishpValue::Macro {
           arguments,
+          variadic_arg,
           body: Rc::new(body.clone()),
         })
       }
@@ -881,6 +929,13 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
         let expander = MacroExpander::new(self.env);
         expander.expand(expr)
+      }
+
+      SpecialForm::Raise => {
+        let arguments = get_elements(tail, 1)?;
+        let error_value = self.eval_expanded(&arguments[0])?;
+
+        Err(EvalError::RuntimeError(error_value.to_string()))
       }
     }
   }
@@ -1506,23 +1561,33 @@ mod tests {
   }
 
   #[test]
-  fn test_eval_lambda_variadic_args() {
-    // (lambda (x y) y) вызванная с (1 2 3 4 5)
-    // x = 1, y = (2 3 4 5)
+  fn test_eval_lambda_variadic_with_dot() {
+    // (lambda (x . rest) rest) called with (1 2 3 4 5)
+    // x = 1, rest = (2 3 4 5)
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-    // Список аргументов: (x y)
+    // Arguments list: (x . rest)
     let args = cons(
       LishpValue::Symbol { name: "x".into() },
-      cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+      cons(
+        LishpValue::Symbol { name: ".".into() },
+        cons(
+          LishpValue::Symbol {
+            name: "rest".into(),
+          },
+          LishpValue::Nil,
+        ),
+      ),
     );
 
-    // Тело: y (возвращаем второй аргумент)
-    let body = LishpValue::Symbol { name: "y".into() };
+    // Body: rest (return variadic arg)
+    let body = LishpValue::Symbol {
+      name: "rest".into(),
+    };
 
-    // (lambda (x y) y)
+    // (lambda (x . rest) rest)
     let lambda_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Lambda),
       cons(args, cons(body, LishpValue::Nil)),
@@ -1530,7 +1595,7 @@ mod tests {
 
     let lambda = evaluator.eval(&lambda_expr).unwrap();
 
-    // (1 2 3 4 5)
+    // Call with (1 2 3 4 5)
     let call_expr = cons(
       lambda,
       cons(
@@ -1550,7 +1615,7 @@ mod tests {
 
     let result = evaluator.eval(&call_expr).unwrap();
 
-    // y должен быть списком (2 3 4 5)
+    // rest should be (2 3 4 5)
     let expected = cons(
       LishpValue::Integer(2),
       cons(
@@ -1565,18 +1630,29 @@ mod tests {
   }
 
   #[test]
-  fn test_eval_lambda_variadic_single_param() {
-    // (lambda (x) x) with (1 2 3)
-    // x = (1 2 3)
+  fn test_eval_lambda_variadic_only() {
+    // (lambda (. rest) rest) with (1 2 3)
+    // rest = (1 2 3)
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-    let args = cons(LishpValue::Symbol { name: "x".into() }, LishpValue::Nil);
+    // Arguments list: (. rest)
+    let args = cons(
+      LishpValue::Symbol { name: ".".into() },
+      cons(
+        LishpValue::Symbol {
+          name: "rest".into(),
+        },
+        LishpValue::Nil,
+      ),
+    );
 
-    let body = LishpValue::Symbol { name: "x".into() };
+    let body = LishpValue::Symbol {
+      name: "rest".into(),
+    };
 
-    // (lambda (x) x)
+    // (lambda (. rest) rest)
     let lambda_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Lambda),
       cons(args, cons(body, LishpValue::Nil)),
@@ -1609,19 +1685,23 @@ mod tests {
 
   #[test]
   fn test_eval_lambda_variadic_with_car() {
-    // (lambda (x rest) x) with (10 20 30 40)
+    // (lambda (x . rest) (car rest)) with (10 20 30 40)
     // x = 10, rest = (20 30 40)
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
+    // Arguments list: (x . rest)
     let args = cons(
       LishpValue::Symbol { name: "x".into() },
       cons(
-        LishpValue::Symbol {
-          name: "rest".into(),
-        },
-        LishpValue::Nil,
+        LishpValue::Symbol { name: ".".into() },
+        cons(
+          LishpValue::Symbol {
+            name: "rest".into(),
+          },
+          LishpValue::Nil,
+        ),
       ),
     );
 
@@ -1635,7 +1715,7 @@ mod tests {
       ),
     );
 
-    // (lambda (x rest) (car rest))
+    // (lambda (x . rest) (car rest))
     let lambda_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Lambda),
       cons(args, cons(body, LishpValue::Nil)),
@@ -2017,17 +2097,30 @@ mod tests {
   }
 
   #[test]
-  fn test_eval_dambda_variadic() {
+  fn test_eval_dambda_variadic_with_dot() {
+    // (dambda (x . rest) rest) with (1 2 3 4)
+    // x = 1, rest = (2 3 4)
     let mut io = MockIoAdapter::new(vec![]);
     let mut env = Environment::new();
     let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
+    // Arguments list: (x . rest)
     let args = cons(
       LishpValue::Symbol { name: "x".into() },
-      cons(LishpValue::Symbol { name: "y".into() }, LishpValue::Nil),
+      cons(
+        LishpValue::Symbol { name: ".".into() },
+        cons(
+          LishpValue::Symbol {
+            name: "rest".into(),
+          },
+          LishpValue::Nil,
+        ),
+      ),
     );
 
-    let body = LishpValue::Symbol { name: "y".into() };
+    let body = LishpValue::Symbol {
+      name: "rest".into(),
+    };
 
     let dambda_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Dambda),
