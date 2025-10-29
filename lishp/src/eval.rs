@@ -240,20 +240,20 @@ fn parse_arguments(
               match variadic_name {
                 LishpValue::Symbol { name } => {
                   variadic_arg = Some(name.clone());
-                  if let Some(after_variadic) = cdr(tail) {
-                    if !matches!(after_variadic, LishpValue::Nil) {
-                      return Err(EvalError::TypeError(format!(
-                        "{} cannot have arguments after variadic parameter",
-                        form_name
-                      )));
-                    }
+                  if let Some(after_variadic) = cdr(tail)
+                    && !matches!(after_variadic, LishpValue::Nil)
+                  {
+                    return Err(EvalError::TypeError(format!(
+                      "{} cannot have arguments after variadic parameter",
+                      form_name
+                    )));
                   }
                   break;
                 }
-                _ => {
+                name => {
                   return Err(EvalError::TypeError(format!(
                     "{} variadic parameter must be a symbol, got: {}",
-                    form_name, variadic_name
+                    form_name, name
                   )));
                 }
               }
@@ -669,7 +669,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         })
       }
 
-      // like lambda, but with dynamic environment
+      // like lambda, but with a dynamic environment
       SpecialForm::Dambda => {
         let elements = get_elements(tail, 2)?;
         let args_list = &elements[0];
@@ -1615,7 +1615,7 @@ mod tests {
 
     let result = evaluator.eval(&call_expr).unwrap();
 
-    // rest should be (2 3 4 5)
+    // the rest should be (2 3 4 5)
     let expected = cons(
       LishpValue::Integer(2),
       cons(
@@ -2158,6 +2158,7 @@ mod tests {
   #[test]
   fn test_eval_dambda_no_closure() {
     // Test that dambda doesn't capture variables in closure like lambda does
+    
     // (def a 1000)
     // (def add (lambda (a) (dambda (x) (_+_ x a))))
     // (def all (lambda (a) (lambda (x) (_+_ x a))))

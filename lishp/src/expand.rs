@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ecow::EcoString;
 
-use crate::value::{LishpValue, car, cdr, cons};
+use crate::value::{car, cdr, cons, LishpValue};
 use crate::{Environment, EvalError};
 
 pub struct MacroExpander<'env> {
@@ -75,22 +75,20 @@ impl<'env> MacroExpander<'env> {
       }
     }
 
-    if let Some(_) = variadic_param {
-      if arg_values.len() < parameters.len() {
-        return Err(EvalError::WrongArgumentCount {
-          form: "macro".to_string(),
-          expected: parameters.len(),
-          got: arg_values.len(),
-        });
-      }
-    } else {
-      if arg_values.len() != parameters.len() {
-        return Err(EvalError::WrongArgumentCount {
-          form: "macro".to_string(),
-          expected: parameters.len(),
-          got: arg_values.len(),
-        });
-      }
+    if variadic_param.is_some() && arg_values.len() < parameters.len() {
+      return Err(EvalError::WrongArgumentCount {
+        form: "macro".to_string(),
+        expected: parameters.len(),
+        got: arg_values.len(),
+      });
+    }
+
+    if arg_values.len() != parameters.len() {
+      return Err(EvalError::WrongArgumentCount {
+        form: "macro".to_string(),
+        expected: parameters.len(),
+        got: arg_values.len(),
+      });
     }
 
     let mut substitutions = HashMap::new();
@@ -107,30 +105,30 @@ impl<'env> MacroExpander<'env> {
       substitutions.insert(variadic_name.clone(), rest_args);
     }
 
-    Self::substitute(body, &substitutions)
+    substitute(body, &substitutions)
   }
+}
 
-  fn substitute(
-    expr: &LishpValue,
-    substitutions: &HashMap<EcoString, LishpValue>,
-  ) -> Result<LishpValue, EvalError> {
-    match expr {
-      LishpValue::Symbol { name } => {
-        if let Some(replacement) = substitutions.get(name) {
-          Ok(replacement.clone())
-        } else {
-          Ok(expr.clone())
-        }
+fn substitute(
+  expr: &LishpValue,
+  substitutions: &HashMap<EcoString, LishpValue>,
+) -> Result<LishpValue, EvalError> {
+  match expr {
+    LishpValue::Symbol { name } => {
+      if let Some(replacement) = substitutions.get(name) {
+        Ok(replacement.clone())
+      } else {
+        Ok(expr.clone())
       }
-
-      LishpValue::Cons(head, tail) => {
-        let new_head = Self::substitute(head, substitutions)?;
-        let new_tail = Self::substitute(tail, substitutions)?;
-        Ok(cons(new_head, new_tail))
-      }
-
-      _ => Ok(expr.clone()),
     }
+
+    LishpValue::Cons(head, tail) => {
+      let new_head = substitute(head, substitutions)?;
+      let new_tail = substitute(tail, substitutions)?;
+      Ok(cons(new_head, new_tail))
+    }
+
+    _ => Ok(expr.clone()),
   }
 }
 
