@@ -49,9 +49,10 @@
   (reduce (lambda (a b) (_*_ a b)) 1 xs))
 
 (defn - (. xs)
-  (if (nil? xs)
-      (rise "- requires at least one argument")
-      (reduce (lambda (a b) (_-_ a b)) (car xs) (cdr xs))))
+  (cond
+    (nil? xs) (raise "- requires at least one argument")
+    (nil? (cdr xs)) (_-_ 0 (car xs))
+    (reduce (lambda (a b) (_-_ a b)) (car xs) (cdr xs))))
 
 (defmacro comment (. a)
   nil)
