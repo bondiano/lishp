@@ -6,9 +6,9 @@ use rustyline::{Editor, Result as RustyResult};
 use std::env;
 use std::path::PathBuf;
 
-use super::eval::{EvalError, process_input};
+use super::eval::{process_input, EvalError};
 use super::helper::ReplHelper;
-use super::input::{InputHandler, LineResult, handle_eof, handle_error, handle_interrupt};
+use super::input::{handle_eof, handle_error, handle_interrupt, InputHandler, LineResult};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_HISTORY_SIZE: usize = 1000;
@@ -31,7 +31,7 @@ impl ReplSession {
     editor.set_max_history_size(history_size)?;
 
     if let Err(_e) = editor.load_history(&history_file) {
-      // It's normal for history file not to exist on first run
+      // It's normal for the history file not to exist on the first run
     }
 
     Ok(Self {
@@ -135,7 +135,7 @@ impl ReplSession {
   }
 
   fn load_file(&mut self, file: &str) -> Result<CommandResult, String> {
-    // Check if file path is empty
+    // Check if a file path is empty
     if file.is_empty() {
       eprintln!(
         "{} Please provide a file path: {} or {}",

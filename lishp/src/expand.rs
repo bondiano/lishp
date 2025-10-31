@@ -75,15 +75,15 @@ impl<'env> MacroExpander<'env> {
       }
     }
 
-    if variadic_param.is_some() && arg_values.len() < parameters.len() {
-      return Err(EvalError::WrongArgumentCount {
-        form: "macro".to_string(),
-        expected: parameters.len(),
-        got: arg_values.len(),
-      });
-    }
-
-    if arg_values.len() != parameters.len() {
+    if variadic_param.is_some() {
+      if arg_values.len() < parameters.len() {
+        return Err(EvalError::WrongArgumentCount {
+          form: "macro".to_string(),
+          expected: parameters.len(),
+          got: arg_values.len(),
+        });
+      }
+    } else if arg_values.len() != parameters.len() {
       return Err(EvalError::WrongArgumentCount {
         form: "macro".to_string(),
         expected: parameters.len(),
@@ -96,7 +96,6 @@ impl<'env> MacroExpander<'env> {
       substitutions.insert(param.clone(), arg.clone());
     }
 
-    // Handle variadic parameter if present
     if let Some(variadic_name) = variadic_param {
       let rest_args = arg_values[parameters.len()..]
         .iter()

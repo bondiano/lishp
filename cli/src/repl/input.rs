@@ -5,6 +5,7 @@ use rustyline::history::History;
 use rustyline::{Editor, Helper, Result as RustyResult};
 
 use super::eval::{EvalError, process_input};
+use crate::load_std_lib;
 
 pub struct InputHandler {
   buffer: String,
@@ -14,10 +15,13 @@ pub struct InputHandler {
 
 impl InputHandler {
   pub fn new() -> Self {
+    let mut env = Environment::new();
+    load_std_lib(&mut env);
+
     Self {
       buffer: String::new(),
       line_number: 1,
-      env: Environment::new(),
+      env,
     }
   }
 

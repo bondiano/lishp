@@ -1,7 +1,8 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use lishp::{Evaluator, StdioAdapter, parser};
+use lishp::{parser, Environment, Evaluator, StdioAdapter};
+use std::path::PathBuf;
 
 use crate::repl::ReplSession;
 
@@ -20,7 +21,7 @@ pub enum Commands {
   Repl,
   /// Run Lishp code
   Run {
-    /// Evaluate expression from command line
+    /// Evaluate expression from the command line
     #[arg(short, long)]
     eval: Option<String>,
     /// Run Lishp files (multiple files will share context)
@@ -29,17 +30,65 @@ pub enum Commands {
   },
 }
 
+fn get_std_lib_path() -> Option<PathBuf> {
+  if let Ok(path) = std::env::var("LISHP_STD_PATH") {
+    let path_buf = PathBuf::from(path);
+    if path_buf.exists() {
+      return Some(path_buf);
+    }
+  }
+
+  let mut default_paths = vec![];
+
+  default_paths.push(PathBuf::from("std.lsp"));
+
+  if let Some(mut home) = dirs::home_dir() {
+    home.push(".lishp");
+    home.push("std.lsp");
+    default_paths.push(home);
+  }
+
+  if let Ok(mut exe_path) = std::env::current_exe() {
+    exe_path.pop();
+    exe_path.push("std.lsp");
+    default_paths.push(exe_path);
+  }
+
+  default_paths.into_iter().find(|p| p.exists())
+}
+
+/// Load the standard library into the given environment
+pub fn load_std_lib(env: &mut Environment) {
+  if let Some(std_path) = get_std_lib_path()
+    && let Ok(contents) = std::fs::read_to_string(&std_path)
+  {
+    let mut io = StdioAdapter::new();
+    let mut evaluator = Evaluator::with_environment(&mut io, env);
+
+    let mut remaining = contents.as_str();
+    while let Ok(Some((value, rest))) = parser::parse(remaining) {
+      if let Err(e) = evaluator.eval(&value) {
+        eprintln!("Error loading std.lsp: {}", e);
+        std::process::exit(1);
+      }
+      remaining = rest.trim();
+      if remaining.is_empty() {
+        break;
+      }
+    }
+  }
+}
+
 pub fn run_repl() -> Result<(), String> {
   let mut session = ReplSession::new().map_err(|e| format!("Failed to initialize REPL: {}", e))?;
   session.run().map_err(|e| format!("REPL error: {}", e))
 }
 
-pub fn evaluate_expression(input: &str) -> Result<String, String> {
+pub fn evaluate_expression(input: &str, env: &mut Environment) -> Result<String, String> {
   let mut remaining = input;
   let mut results = Vec::new();
   let mut io = StdioAdapter::new();
-  let mut env = lishp::Environment::new();
-  let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+  let mut evaluator = Evaluator::with_environment(&mut io, env);
 
   loop {
     match parser::parse(remaining) {
@@ -66,23 +115,30 @@ pub fn evaluate_expression(input: &str) -> Result<String, String> {
 }
 
 pub fn run_eval(expression: &str) -> Result<(), String> {
-  let result = evaluate_expression(expression)?;
+  let mut env = Environment::new();
+  load_std_lib(&mut env);
+  let result = evaluate_expression(expression, &mut env)?;
   println!("{}", result);
   Ok(())
 }
 
 pub fn run_file(path: &str) -> Result<(), String> {
+  let mut env = Environment::new();
+  load_std_lib(&mut env);
   let contents =
     std::fs::read_to_string(path).map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
-  evaluate_expression(&contents)?;
+  evaluate_expression(&contents, &mut env)?;
   Ok(())
 }
 
 pub fn run_files(paths: &[String]) -> Result<(), String> {
+  let mut env = Environment::new();
+  load_std_lib(&mut env);
+
   for path in paths {
     let contents = std::fs::read_to_string(path)
       .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
-    evaluate_expression(&contents)?;
+    evaluate_expression(&contents, &mut env)?;
   }
 
   Ok(())
