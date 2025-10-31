@@ -2158,7 +2158,7 @@ mod tests {
   #[test]
   fn test_eval_dambda_no_closure() {
     // Test that dambda doesn't capture variables in closure like lambda does
-    
+
     // (def a 1000)
     // (def add (lambda (a) (dambda (x) (_+_ x a))))
     // (def all (lambda (a) (lambda (x) (_+_ x a))))

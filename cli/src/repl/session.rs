@@ -6,9 +6,9 @@ use rustyline::{Editor, Result as RustyResult};
 use std::env;
 use std::path::PathBuf;
 
-use super::eval::{process_input, EvalError};
+use super::eval::{EvalError, process_input};
 use super::helper::ReplHelper;
-use super::input::{handle_eof, handle_error, handle_interrupt, InputHandler, LineResult};
+use super::input::{InputHandler, LineResult, handle_eof, handle_error, handle_interrupt};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_HISTORY_SIZE: usize = 1000;

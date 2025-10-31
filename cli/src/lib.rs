@@ -1,7 +1,7 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use lishp::{parser, Environment, Evaluator, StdioAdapter};
+use lishp::{Environment, Evaluator, StdioAdapter, parser};
 use std::path::PathBuf;
 
 use crate::repl::ReplSession;

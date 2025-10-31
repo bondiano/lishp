@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ecow::EcoString;
 
-use crate::value::{car, cdr, cons, LishpValue};
+use crate::value::{LishpValue, car, cdr, cons};
 use crate::{Environment, EvalError};
 
 pub struct MacroExpander<'env> {
