@@ -197,8 +197,8 @@ impl LishpValue {
       LishpValue::Lambda { .. } => "lambda",
       LishpValue::Dambda { .. } => "dambda",
       LishpValue::Macro { .. } => "macro",
-      LishpValue::Nil => "nil",
-      LishpValue::Cons(_, _) => "cons",
+      LishpValue::Nil => "list",
+      LishpValue::Cons(_, _) => "list",
       _ => "symbol",
     }
   }
