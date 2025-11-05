@@ -26,7 +26,7 @@ fn test_macro_code_transformation() {
   let mut env = Environment::new();
   let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-  let (def_expr, _) = parser::parse("(def unless (macro (cond then else) (if cond else then)))")
+  let (def_expr, _) = parser::parse("(def unless (macro (cond then else) (cons (quote if) (cons cond (cons else (cons then nil))))))")
     .expect("parse failed")
     .expect("no expression");
   evaluator.eval(&def_expr).unwrap();
@@ -88,7 +88,7 @@ fn test_macro_with_unevaluated_args() {
   let mut env = Environment::new();
   let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-  let (def_expr, _) = parser::parse("(def quote-it (macro (x) (quote x)))")
+  let (def_expr, _) = parser::parse("(def quote-it (macro (x) (cons (quote quote) (cons x nil))))")
     .expect("parse failed")
     .expect("no expression");
   evaluator.eval(&def_expr).unwrap();
@@ -131,7 +131,7 @@ fn test_expand_macro_unless() {
   let mut env = Environment::new();
   let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-  let (def_expr, _) = parser::parse("(def unless (macro (cond then else) (if cond else then)))")
+  let (def_expr, _) = parser::parse("(def unless (macro (cond then else) (cons (quote if) (cons cond (cons else (cons then nil))))))")
     .expect("parse failed")
     .expect("no expression");
   evaluator.eval(&def_expr).unwrap();
@@ -196,7 +196,7 @@ fn test_macro_multi_step() {
   let mut env = Environment::new();
   let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
 
-  let (def_expr, _) = parser::parse("(def when (macro (cond body) (if cond (do body) nil)))")
+  let (def_expr, _) = parser::parse("(def when (macro (cond body) (cons (quote if) (cons cond (cons (cons (quote do) (cons body nil)) (cons nil nil))))))")
     .expect("parse failed")
     .expect("no expression");
   evaluator.eval(&def_expr).unwrap();
@@ -216,4 +216,52 @@ fn test_macro_multi_step() {
     .expect("parse failed")
     .expect("no expression");
   assert_eq!(expanded, expected);
+}
+#[test]
+fn test_macro_parameter_cleanup() {
+  let mut io = MockIoAdapter::new(vec![]);
+  let mut env = Environment::new();
+  let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+  let (def_expr, _) = parser::parse("(def test-macro (macro (x) (_+_ x 1)))")
+    .expect("parse failed")
+    .expect("no expression");
+  evaluator.eval(&def_expr).unwrap();
+
+  let (call_expr, _) = parser::parse("(test-macro 5)")
+    .expect("parse failed")
+    .expect("no expression");
+  let result = evaluator.eval(&call_expr).unwrap();
+  assert_eq!(result, value::LishpValue::Integer(6));
+
+  assert!(
+    env.get("x").is_none(),
+    "Macro parameter x should not leak into environment"
+  );
+}
+
+#[test]
+fn test_macro_parameter_restoration() {
+  let mut io = MockIoAdapter::new(vec![]);
+  let mut env = Environment::new();
+
+  env.define("x", value::LishpValue::Integer(100));
+
+  let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+
+  let (def_expr, _) = parser::parse("(def test-macro (macro (x) (_+_ x 1)))")
+    .expect("parse failed")
+    .expect("no expression");
+  evaluator.eval(&def_expr).unwrap();
+
+  let (call_expr, _) = parser::parse("(test-macro 5)")
+    .expect("parse failed")
+    .expect("no expression");
+  evaluator.eval(&call_expr).unwrap();
+
+  assert_eq!(
+    env.get("x"),
+    Some(value::LishpValue::Integer(100)),
+    "Original x should be restored after macro expansion"
+  );
 }

@@ -6,23 +6,24 @@
   (_=_ x nil)))
 
 (def defmacro-codegen (lambda (name args body-list)
-  (list def name (list macro args
+  (list def name (list 'macro args
     (if (nil? body-list) nil
       (if (nil? (cdr body-list))
         (car body-list)
         (cons do body-list)))))))
 (def defmacro (macro (name args . body)
-  (eval (defmacro-codegen 'name 'args 'body))))
+  (eval (defmacro-codegen name args body))))
 
 (def defn-codegen (lambda (name args body-list)
-  (list def name (list lambda args
+  (list def name (list 'lambda args
     (if (nil? body-list) nil
       (if (nil? (cdr body-list))
         (car body-list)
         (cons do body-list)))))))
 (defmacro defn (name args . body)
-  (eval (defn-codegen 'name 'args 'body)))
-(def defun defn)
+  (eval (defn-codegen name args body)))
+(defmacro defun (name args . body)
+  (eval (defn-codegen name args body)))
 
 (defmacro comment (. a)
   nil)
@@ -30,15 +31,17 @@
 (defn cadr (l) (car (cdr l)))
 (defn cddr (l) (cdr (cdr l)))
 
+(defn println (x)
+  (print (str x \n)))
+
 ;; (cond condition body ... [default])
 ;; Examples: (cond true 1)  (cond false 1 2)  (cond false 1 true 2)
-(defn cond-gen (clauses)
+(defmacro cond (. clauses)
   (if (nil? clauses)
-      nil
-      (if (nil? (cdr clauses))
-          (car clauses)
-          (list 'if (car clauses) (cadr clauses) (cond-gen (cddr clauses))))))
-(defmacro cond (. clauses) (eval (cond-gen 'clauses)))
+    nil
+    (if (nil? (cdr clauses))
+      (car clauses)
+      (list 'if (car clauses) (cadr clauses) (cons 'cond (cddr clauses))))))
 
 (defn foldl (f init lst)
   (if (nil? lst)
@@ -108,14 +111,18 @@
 (defn not (x) (if x false true))
 
 ; (and 1 2 3) = (if 1 (if 2 3 false) false)
-(defn and-codegen (xs)
-  (if (nil? xs)
+; Recursive macro definition
+(defmacro and (. args)
+  (if (nil? args)
     true
-    (list if (car xs) (and-codegen (cdr xs)) false)))
-(defmacro and (. args) (eval (and-codegen 'args)))
+    (if (nil? (cdr args))
+      (car args)
+      (list 'if (car args) (cons 'and (cdr args)) false))))
 
-(defn or-codegen (xs)
-  (if (nil? xs)
+; Recursive macro definition
+(defmacro or (. args)
+  (if (nil? args)
     false
-    (list if (car xs) true (or-codegen (cdr xs)))))
-(defmacro or (. args) (eval (or-codegen 'args)))
+    (if (nil? (cdr args))
+      (car args)
+      (list 'if (car args) true (cons 'or (cdr args))))))
