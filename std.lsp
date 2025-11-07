@@ -34,6 +34,7 @@
 (defn println (x)
   (print (str x \n)))
 
+
 ;; (cond condition body ... [default])
 ;; Examples: (cond true 1)  (cond false 1 2)  (cond false 1 true 2)
 (defmacro cond (. clauses)
@@ -111,7 +112,6 @@
 (defn not (x) (if x false true))
 
 ; (and 1 2 3) = (if 1 (if 2 3 false) false)
-; Recursive macro definition
 (defmacro and (. args)
   (if (nil? args)
     true
@@ -119,10 +119,99 @@
       (car args)
       (list 'if (car args) (cons 'and (cdr args)) false))))
 
-; Recursive macro definition
 (defmacro or (. args)
   (if (nil? args)
     false
     (if (nil? (cdr args))
       (car args)
       (list 'if (car args) true (cons 'or (cdr args))))))
+
+;; List manipulation
+
+(defn range (a b)
+	(if (< a b) (cons a (range (+ 1 a) b)) nil))
+
+(defn range-tail-core (a b acc)
+	(if (< a b)
+	  (range-tail-core a (- b 1) (cons (- b 1) acc))
+	  acc))
+(defn range-tail (a b) (range-tail-core a b nil))
+
+(defn map (func xs)
+  (if (nil? xs) nil
+    (cons (func (car xs)) (map func (cdr xs)))))
+
+(defn reverse-core (xs acc)
+  (if (nil? xs) acc
+  (reverse-core (cdr xs) (cons (car xs) acc))))
+(defn reverse (xs) (reverse-core xs nil))
+
+(defn map-reverse-core (func xs acc)
+	(if (nil? xs) acc
+    (map-reverse-core func (cdr xs) (cons (func (car xs)) acc))))
+(defn map-reverse (func xs) (map-reverse-core func xs nil))
+(defn map-tail (func xs) (reverse (map-reverse func xs)))
+
+(defn filter (pred xs)
+	(cond (nil? xs) nil
+			  (pred (car xs)) (cons (car xs) (filter pred (cdr xs)))
+			  (filter pred (cdr xs))))
+
+(defn take (n xs)
+	(cond (< n 1) nil
+	  		(nil? xs) nil
+	  		(cons (car xs) (take (- n 1) (cdr xs)))))
+
+(defn drop (n xs)
+	(cond (< n 1) xs
+	  		(nil? xs) nil
+	  		(drop (- n 1) (cdr xs))))
+
+(defn append-reverse (a b)
+	(if (nil? a) b (append-reverse (cdr a) (cons (car a) b))))
+(defn append (a b) (append-reverse (reverse a) b))
+
+(defn concat (xs) (reduce append nil xs))
+
+(defn length (xs) (reduce (fn (a b) (+ a 1)) 0 xs))
+
+(defn all? (pred xs)
+	(cond (nil? xs) true
+	      (pred (car xs)) (all? pred (cdr xs))
+	      false))
+
+(defn any? (pred xs)
+	(cond (nil? xs) false
+	      (pred (car xs)) true
+	      (any? pred (cdr xs))))
+
+(defn indexof-from (elem xs idx)
+	(cond (nil? xs) -1
+	      (= elem (car xs)) idx
+	      (indexof-from elem (cdr xs) (+ 1 idx))))
+(defn indexof (elem xs) (indexof-from elem xs 0))
+
+(defn range (a b)
+	(if (< a b) (cons a (range (+ 1 a) b)) nil))
+
+(defn range-tail-core (a b acc)
+	(if (< a b) (range-tail-core a (- b 1) (cons (- b 1) acc)) acc))
+(defn range-tail (a b) (range-tail-core a b nil))
+
+(defn list-ref (n xs)
+	(def tmp (drop n xs))
+	(if (nil? tmp) (raise (++ "index out of bounds: " n " of " xs))
+	    (car tmp)))
+
+(defn zip-with (f a b)
+	(if (or (nil? a) (nil? b)) nil
+	    (cons (f (car a) (car b)) (zip-with f (cdr a) (cdr b)))))
+
+(defn flatten (xs)
+  (cond (!= (typeof xss) "List") (list xs)
+        (nil? xs) nil
+        (append (flatten (car xs)) (flatten (cdr xs)))))
+
+(defn dedupe (xs)
+  (if (nil? xs) nil
+      (cons (car xs) (dedupe (filter (fn (v) (!= v (car xs))) (cdr xs))))))
