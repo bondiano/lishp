@@ -29,11 +29,8 @@
   nil)
 
 (defn cadr (l) (car (cdr l)))
+(defn caar (l) (car (car l)))
 (defn cddr (l) (cdr (cdr l)))
-
-(defn println (x)
-  (print (str x \n)))
-
 
 ;; (cond condition body ... [default])
 ;; Examples: (cond true 1)  (cond false 1 2)  (cond false 1 true 2)
@@ -43,6 +40,8 @@
     (if (nil? (cdr clauses))
       (car clauses)
       (list 'if (car clauses) (cadr clauses) (cons 'cond (cddr clauses))))))
+
+(defmacro when (c . body) (if c (eval (cons do body)) nil))
 
 (defn foldl (f init lst)
   (if (nil? lst)
@@ -60,6 +59,11 @@
 
 (defn str (. xs)
   (reduce (fn (a b) (_++_ a b)) "" xs))
+
+(def ++ str)
+
+(defn println (x)
+  (print (str x \n)))
 
 (defn + (. xs)
   (reduce (fn (a b) (_+_ a b)) 0 xs))
@@ -110,6 +114,7 @@
 (defn = (. args) (if (nil? args) true (bp-core bin-eq (car args) (cdr args))))
 
 (defn not (x) (if x false true))
+(defn != (a b) (not (= a b)))
 
 ; (and 1 2 3) = (if 1 (if 2 3 false) false)
 (defmacro and (. args)
@@ -125,6 +130,9 @@
     (if (nil? (cdr args))
       (car args)
       (list 'if (car args) true (cons 'or (cdr args))))))
+
+(defn list? (x)
+  (or (= (typeof x) "cons") (= (typeof x) "list")))
 
 ;; List manipulation
 
@@ -208,10 +216,70 @@
 	    (cons (f (car a) (car b)) (zip-with f (cdr a) (cdr b)))))
 
 (defn flatten (xs)
-  (cond (!= (typeof xss) "List") (list xs)
+  (cond (not (list? xs)) (list xs)
         (nil? xs) nil
         (append (flatten (car xs)) (flatten (cdr xs)))))
 
-(defn dedupe (xs)
+(defn distinct (xs)
   (if (nil? xs) nil
-      (cons (car xs) (dedupe (filter (fn (v) (!= v (car xs))) (cdr xs))))))
+      (cons (car xs) (distinct (filter (fn (v) (!= v (car xs))) (cdr xs))))))
+
+(defn apply-1 (f args)
+  (eval (cons f args)))
+
+(defn map-n-core (f l)
+    (if (any? nil? l)
+        nil
+        (cons (apply-1 f (map car l))
+            (map-n-core f (map cdr l)))))
+
+(defn map-n (f . l)
+    (if (nil? l) nil (map-n-core f l)))
+
+;; Pattern Matching
+
+(defn is-var? (p)
+  (and (= (typeof p) "symbol") (!= p 'nil)))
+
+(defn is-rest? (p)
+  (and (list? p) (not (nil? p)) (= (car p)  '.)))
+
+(defn match-bindings-core (pattern value acc)
+  (cond
+    (nil? pattern)
+      (if (nil? value) acc
+          (raise "Pattern mismatch: expected nil"))
+
+    (= pattern '_)
+      acc
+
+    (is-rest? pattern)
+      (do
+        (def rest-var (cadr pattern))
+        (if (is-var? rest-var)
+            (cons (list rest-var value) acc)
+            (raise "Rest pattern must be followed by a variable")))
+
+    (is-var? pattern)
+      (cons (list pattern value) acc)
+
+    (list? pattern)
+      (if (list? value)
+          (do
+            (def car-bindings (match-bindings-core (car pattern) (car value) acc))
+            (match-bindings-core (cdr pattern) (cdr value) car-bindings))
+          (raise "Pattern mismatch: expected list"))
+
+    (if (= pattern value) acc
+        (raise (str "Pattern mismatch: expected " pattern " but got " value)))))
+
+(defn match-bindings (pattern value)
+  (match-bindings-core pattern value nil))
+
+(defn binding->def (b)
+  (list 'def (car b) (list 'quote (cadr b))))
+
+(defmacro match (pattern value)
+  (def evaled-value (eval value))
+  (def bindings (match-bindings pattern evaled-value))
+  (cons 'do (map binding->def bindings)))
