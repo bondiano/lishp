@@ -41,7 +41,7 @@
       (car clauses)
       (list 'if (car clauses) (cadr clauses) (cons 'cond (cddr clauses))))))
 
-(defmacro when (c . body) (if c (eval (cons do body)) nil))
+(defmacro when (c . body) (list if c (cons do body) nil))
 
 (defn foldl (f init lst)
   (if (nil? lst)
@@ -283,3 +283,11 @@
   (def evaled-value (eval value))
   (def bindings (match-bindings pattern evaled-value))
   (cons 'do (map binding->def bindings)))
+
+;; Mutating operators
+
+(defmacro += (x v)
+  (list 'set! x (list '+ x v)))
+
+(defmacro -= (x v)
+  (list 'set! x (list '- x v)))

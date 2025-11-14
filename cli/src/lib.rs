@@ -1,8 +1,10 @@
 mod repl;
 
 use clap::{Parser, Subcommand};
-use lishp::{Environment, Evaluator, StdioAdapter, parser};
+use lishp::{parser, Environment, Evaluator, StdioAdapter};
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use crate::repl::ReplSession;
 
@@ -63,7 +65,14 @@ pub fn load_std_lib(env: &mut Environment) {
     && let Ok(contents) = std::fs::read_to_string(&std_path)
   {
     let mut io = StdioAdapter::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, env);
+    let env_rc = Rc::new(RefCell::new(std::mem::replace(env, Environment::new())));
+    let mut evaluator = Evaluator::with_environment(&mut io, env_rc.clone());
+
+    let restore_env = || {
+      let final_refcell =
+        Rc::try_unwrap(env_rc).unwrap_or_else(|rc| RefCell::new((*rc.borrow()).clone()));
+      *env = final_refcell.into_inner();
+    };
 
     let mut remaining = contents.as_str();
     while let Ok(Some((value, rest))) = parser::parse(remaining) {
@@ -76,6 +85,8 @@ pub fn load_std_lib(env: &mut Environment) {
         break;
       }
     }
+
+    restore_env();
   }
 }
 
@@ -84,7 +95,7 @@ pub fn run_repl() -> Result<(), String> {
   session.run().map_err(|e| format!("REPL error: {}", e))
 }
 
-pub fn evaluate_expression(input: &str, env: &mut Environment) -> Result<String, String> {
+pub fn evaluate_expression(input: &str, env: Rc<RefCell<Environment>>) -> Result<String, String> {
   let mut remaining = input;
   let mut results = Vec::new();
   let mut io = StdioAdapter::new();
@@ -115,30 +126,30 @@ pub fn evaluate_expression(input: &str, env: &mut Environment) -> Result<String,
 }
 
 pub fn run_eval(expression: &str) -> Result<(), String> {
-  let mut env = Environment::new();
-  load_std_lib(&mut env);
-  let result = evaluate_expression(expression, &mut env)?;
+  let env = Rc::new(RefCell::new(Environment::new()));
+  load_std_lib(&mut env.borrow_mut());
+  let result = evaluate_expression(expression, env)?;
   println!("{}", result);
   Ok(())
 }
 
 pub fn run_file(path: &str) -> Result<(), String> {
-  let mut env = Environment::new();
-  load_std_lib(&mut env);
+  let env = Rc::new(RefCell::new(Environment::new()));
+  load_std_lib(&mut env.borrow_mut());
   let contents =
     std::fs::read_to_string(path).map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
-  evaluate_expression(&contents, &mut env)?;
+  evaluate_expression(&contents, env)?;
   Ok(())
 }
 
 pub fn run_files(paths: &[String]) -> Result<(), String> {
-  let mut env = Environment::new();
-  load_std_lib(&mut env);
+  let env = Rc::new(RefCell::new(Environment::new()));
+  load_std_lib(&mut env.borrow_mut());
 
   for path in paths {
     let contents = std::fs::read_to_string(path)
       .map_err(|e| format!("Failed to read file '{}': {}", path, e))?;
-    evaluate_expression(&contents, &mut env)?;
+    evaluate_expression(&contents, env.clone())?;
   }
 
   Ok(())

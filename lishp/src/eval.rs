@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::io::IoAdapter;
 use crate::parser;
 use crate::value::{
-  BinaryOperator, BinaryPredicate, LishpValue, SpecialForm, car, cdr, cons, is_list,
+  car, cdr, cons, is_list, BinaryOperator, BinaryPredicate, LishpValue, SpecialForm,
 };
 
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -16,11 +16,15 @@ pub enum EvalError {
   #[error("Cannot set undefined variable: {0}")]
   CannotSetUndefinedVariable(String),
 
-  #[error("Invalid binary operator {operator}: cannot apply to types ({left_type}, {right_type})")]
+  #[error(
+    "Invalid binary operator {operator}: cannot apply to types ({left_type}, {right_type}) for values ({left_value}, {right_value})"
+  )]
   InvalidBinaryOperator {
     operator: BinaryOperator,
     left_type: String,
     right_type: String,
+    left_value: String,
+    right_value: String,
   },
 
   #[error(
@@ -49,9 +53,9 @@ pub enum EvalError {
   EvalNil,
 
   #[error(
-    "Cannot call {value_type} as a function (expected lambda, dambda, special form, binary operator, or binary predicate)"
+    "Cannot call {value} as a function (expected lambda, dambda, special form, binary operator, or binary predicate)"
   )]
-  WrongHeadForm { value_type: String },
+  WrongHeadForm { value: String },
 
   #[error("Division by zero")]
   DivisionByZero,
@@ -170,7 +174,21 @@ impl Environment {
   }
 
   pub fn contains(&self, name: &str) -> bool {
-    self.frame.contains_key(name)
+    if self.frame.contains_key(name) {
+      return true;
+    }
+
+    let mut current_parent = self.parent.clone();
+
+    while let Some(parent_rc) = current_parent {
+      let parent = parent_rc.borrow();
+      if parent.frame.contains_key(name) {
+        return true;
+      }
+      current_parent = parent.parent.clone();
+    }
+
+    false
   }
 }
 
@@ -319,6 +337,8 @@ fn eval_binary_operator(
         operator,
         left_type,
         right_type,
+        left_value: repr_to_str(&left),
+        right_value: repr_to_str(&right),
       }),
     },
     BinaryOperator::Subtract => match (&left, &right) {
@@ -332,6 +352,8 @@ fn eval_binary_operator(
         operator,
         left_type,
         right_type,
+        left_value: repr_to_str(&left),
+        right_value: repr_to_str(&right),
       }),
     },
     BinaryOperator::Multiply => match (&left, &right) {
@@ -345,6 +367,8 @@ fn eval_binary_operator(
         operator,
         left_type,
         right_type,
+        left_value: repr_to_str(&left),
+        right_value: repr_to_str(&right),
       }),
     },
     BinaryOperator::Divide => {
@@ -374,6 +398,8 @@ fn eval_binary_operator(
           operator,
           left_type,
           right_type,
+          left_value: repr_to_str(&left),
+          right_value: repr_to_str(&right),
         }),
       }
     }
@@ -385,6 +411,8 @@ fn eval_binary_operator(
         operator,
         left_type,
         right_type,
+        left_value: repr_to_str(&left),
+        right_value: repr_to_str(&right),
       }),
     },
     BinaryOperator::Pow => match (&left, &right) {
@@ -398,6 +426,8 @@ fn eval_binary_operator(
         operator,
         left_type,
         right_type,
+        left_value: repr_to_str(&left),
+        right_value: repr_to_str(&right),
       }),
     },
     BinaryOperator::StrConcat => {
@@ -451,39 +481,49 @@ fn is_truthy(value: &LishpValue) -> bool {
   !matches!(value, LishpValue::Bool(false) | LishpValue::Nil)
 }
 
-pub struct Evaluator<'io, 'env> {
+pub struct Evaluator<'io> {
   io: &'io mut dyn IoAdapter,
-  env: &'env mut Environment,
+  env: Rc<RefCell<Environment>>,
 }
 
-impl<'io, 'env> Evaluator<'io, 'env> {
-  pub fn with_environment(io: &'io mut dyn IoAdapter, env: &'env mut Environment) -> Self {
+impl<'io> Evaluator<'io> {
+  pub fn with_environment(io: &'io mut dyn IoAdapter, env: Rc<RefCell<Environment>>) -> Self {
     Self { io, env }
   }
 
-  pub fn environment(&self) -> &Environment {
-    self.env
+  pub fn environment(&self) -> Rc<RefCell<Environment>> {
+    self.env.clone()
   }
 
-  pub fn environment_mut(&mut self) -> &mut Environment {
-    self.env
+  pub fn environment_mut(&mut self) -> Rc<RefCell<Environment>> {
+    self.env.clone()
   }
 
-  pub fn into_environment(self) -> &'env mut Environment {
+  pub fn into_environment(self) -> Rc<RefCell<Environment>> {
     self.env
   }
 
   pub fn eval(&mut self, value: &LishpValue) -> Result<LishpValue, EvalError> {
-    if let LishpValue::Cons(_, _) = value
+    // Check for macro expansion
+    let macro_info = if let LishpValue::Cons(_, _) = value
       && !matches!(value, LishpValue::Nil)
       && let Some(head) = car(value)
       && let LishpValue::Symbol { name } = head
-      && let Some(LishpValue::Macro {
-        arguments,
-        variadic_arg,
-        body,
-      }) = self.env.get(name)
     {
+      // Clone the macro value to avoid borrow issues
+      self.env.borrow().get(name).and_then(|v| match v {
+        LishpValue::Macro {
+          arguments,
+          variadic_arg,
+          body,
+        } => Some((arguments, variadic_arg, body)),
+        _ => None,
+      })
+    } else {
+      None
+    };
+
+    if let Some((arguments, variadic_arg, body)) = macro_info {
       let tail = cdr(value).ok_or(EvalError::EvalNil)?;
       let expanded = self.expand_macro(&arguments, variadic_arg.as_ref(), &body, tail)?;
       return self.eval(&expanded);
@@ -496,6 +536,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
     match value {
       LishpValue::Symbol { name } => self
         .env
+        .borrow()
         .get(name)
         .ok_or_else(|| EvalError::UndefinedVariable(name.to_string())),
 
@@ -532,7 +573,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
             body,
             environment,
           } => {
-            let mut lambda_env = environment.borrow().clone();
+            let mut lambda_env = Environment::new_with_parent(environment.clone());
             let param_count = arguments.len();
             let mut current_tail = tail;
 
@@ -586,7 +627,8 @@ impl<'io, 'env> Evaluator<'io, 'env> {
               });
             }
 
-            let mut lambda_evaluator = Evaluator::with_environment(self.io, &mut lambda_env);
+            let lambda_env_rc = Rc::new(RefCell::new(lambda_env));
+            let mut lambda_evaluator = Evaluator::with_environment(self.io, lambda_env_rc);
             lambda_evaluator.eval(&body)
           }
 
@@ -596,7 +638,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
             body,
           } => {
             let mut dambda_env = Environment::new();
-            dambda_env.parent = Some(Rc::new(RefCell::new(self.env.clone())));
+            dambda_env.parent = Some(self.env.clone());
 
             let mut current_tail = tail;
             let param_count = arguments.len();
@@ -647,12 +689,13 @@ impl<'io, 'env> Evaluator<'io, 'env> {
               });
             }
 
-            let mut dambda_evaluator = Evaluator::with_environment(self.io, &mut dambda_env);
+            let dambda_env_rc = Rc::new(RefCell::new(dambda_env));
+            let mut dambda_evaluator = Evaluator::with_environment(self.io, dambda_env_rc);
             dambda_evaluator.eval(&body)
           }
 
           _ => Err(EvalError::WrongHeadForm {
-            value_type: evaluated_head.type_name().to_string(),
+            value: evaluated_head.to_string(),
           }),
         }
       }
@@ -698,9 +741,9 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
     let mut saved_bindings = Vec::new();
     for (param, arg) in parameters.iter().zip(arg_values.iter()) {
-      let old_value = self.env.get(param);
+      let old_value = self.env.borrow().get(param);
       saved_bindings.push((param.clone(), old_value));
-      self.env.define(param, arg.clone());
+      self.env.borrow_mut().define(param, arg.clone());
     }
 
     if let Some(variadic_name) = variadic_param {
@@ -708,9 +751,9 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         .iter()
         .rev()
         .fold(LishpValue::Nil, |acc, arg| cons(arg.clone(), acc));
-      let old_value = self.env.get(variadic_name);
+      let old_value = self.env.borrow().get(variadic_name);
       saved_bindings.push((variadic_name.clone(), old_value));
-      self.env.define(variadic_name, rest_args);
+      self.env.borrow_mut().define(variadic_name, rest_args);
     }
 
     let result = self.eval(body);
@@ -718,10 +761,10 @@ impl<'io, 'env> Evaluator<'io, 'env> {
     // Restore previous bindings
     for (param, old_value) in saved_bindings {
       if let Some(value) = old_value {
-        self.env.define(&param, value);
+        self.env.borrow_mut().define(&param, value);
       } else {
         // Remove the binding if it didn't exist before
-        self.env.remove(&param);
+        self.env.borrow_mut().remove(&param);
       }
     }
 
@@ -748,13 +791,11 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 
         let (arguments, variadic_arg) = parse_arguments(args_list, "lambda")?;
 
-        let environment = self.env.clone();
-
         Ok(LishpValue::Lambda {
           arguments,
           variadic_arg,
           body: Rc::new(body.clone()),
-          environment: Rc::new(RefCell::new(environment)),
+          environment: self.env.clone(),
         })
       }
 
@@ -895,7 +936,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
       SpecialForm::Eval => {
         let arguments = get_elements(tail, 1)?;
         let expression = self.eval(&arguments[0])?;
-        self.eval_expanded(&expression)
+        self.eval(&expression)
       }
 
       SpecialForm::Do => {
@@ -957,7 +998,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
             environment.borrow_mut().define(name, value.clone());
           }
 
-          self.env.define(name, value);
+          self.env.borrow_mut().define(name, value);
           Ok(LishpValue::Nil)
         } else {
           Err(EvalError::CannotDefineNonSymbol)
@@ -968,12 +1009,12 @@ impl<'io, 'env> Evaluator<'io, 'env> {
         let arguments = get_elements(tail, 2)?;
 
         if let LishpValue::Symbol { name } = &arguments[0] {
-          if !self.env.contains(name) {
+          if !self.env.borrow().contains(name) {
             return Err(EvalError::UndefinedVariable(name.to_string()));
           }
 
           let value = self.eval(&arguments[1])?;
-          self.env.set(name, value)?;
+          self.env.borrow_mut().set(name, value)?;
           Ok(LishpValue::Nil)
         } else {
           Err(EvalError::CannotSetNonSymbol)
@@ -1025,6 +1066,7 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           {
             self
               .env
+              .borrow()
               .get(name)
               .is_some_and(|v| matches!(v, LishpValue::Macro { .. }))
           } else {
@@ -1036,14 +1078,22 @@ impl<'io, 'env> Evaluator<'io, 'env> {
           }
 
           // Expand one level
-          if let Some(head) = car(&current)
+          let macro_values = if let Some(head) = car(&current)
             && let LishpValue::Symbol { name } = head
-            && let Some(LishpValue::Macro {
-              arguments,
-              variadic_arg,
-              body,
-            }) = self.env.get(name)
           {
+            self.env.borrow().get(name).and_then(|v| match v {
+              LishpValue::Macro {
+                arguments,
+                variadic_arg,
+                body,
+              } => Some((arguments, variadic_arg, body)),
+              _ => None,
+            })
+          } else {
+            None
+          };
+
+          if let Some((arguments, variadic_arg, body)) = macro_values {
             let tail_args = cdr(&current).ok_or(EvalError::EvalNil)?;
             current = self.expand_macro(&arguments, variadic_arg.as_ref(), &body, tail_args)?;
             continue;
@@ -1067,14 +1117,16 @@ impl<'io, 'env> Evaluator<'io, 'env> {
 mod tests {
   use super::*;
   use crate::io::MockIoAdapter;
-  use crate::value::{BinaryOperator, BinaryPredicate, LishpValue, SpecialForm, cons};
+  use crate::value::{cons, BinaryOperator, BinaryPredicate, LishpValue, SpecialForm};
+  use std::cell::RefCell;
+  use std::rc::Rc;
 
   #[test]
   fn test_eval_print_with_mock_io() {
     // (print "hello")
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::SpecialForm(SpecialForm::Print),
@@ -1091,8 +1143,8 @@ mod tests {
   fn test_eval_print_expression() {
     // (print (_+_ 2 3))
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let add_expr = cons(
       LishpValue::BinaryOperator(BinaryOperator::Add),
@@ -1116,8 +1168,8 @@ mod tests {
   fn test_eval_read_with_mock_io() {
     // (read)
     let mut io = MockIoAdapter::new(vec!["42".to_string()]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(LishpValue::SpecialForm(SpecialForm::Read), LishpValue::Nil);
 
@@ -1129,8 +1181,8 @@ mod tests {
   fn test_eval_read_string() {
     // (read)
     let mut io = MockIoAdapter::new(vec!["\"hello world\"".to_string()]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(LishpValue::SpecialForm(SpecialForm::Read), LishpValue::Nil);
 
@@ -1142,8 +1194,8 @@ mod tests {
   fn test_eval_read_and_eval() {
     // (eval (read)) where input is "(_+_ 2 3)"
     let mut io = MockIoAdapter::new(vec!["(_+_ 2 3)".to_string()]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let read_expr = cons(LishpValue::SpecialForm(SpecialForm::Read), LishpValue::Nil);
     let expr = cons(
@@ -1159,8 +1211,8 @@ mod tests {
   fn test_eval_do_with_print() {
     // (do (print "first") (print "second") 42)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let print1 = cons(
       LishpValue::SpecialForm(SpecialForm::Print),
@@ -1188,8 +1240,8 @@ mod tests {
   fn test_eval_predicate_equals_true() {
     // (_=_ 5 5) = true
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::Equals),
@@ -1207,8 +1259,8 @@ mod tests {
   fn test_eval_predicate_equals_false() {
     // (_=_ 5 10) = false
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::Equals),
@@ -1226,8 +1278,8 @@ mod tests {
   fn test_eval_predicate_less_than_true() {
     // (_<_ 3 5) = true
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
@@ -1245,8 +1297,8 @@ mod tests {
   fn test_eval_predicate_less_than_false() {
     // (_<_ 10 5) = false
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
@@ -1264,8 +1316,8 @@ mod tests {
   fn test_eval_predicate_greater_than_true() {
     // (_>_ 10 5) = true
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::GreaterThan),
@@ -1283,8 +1335,8 @@ mod tests {
   fn test_eval_predicate_greater_than_false() {
     // (_>_ 3 5) = false
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::GreaterThan),
@@ -1302,8 +1354,8 @@ mod tests {
   fn test_eval_predicate_with_doubles() {
     // (_<_ 3.5 5.0) = true
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
@@ -1321,8 +1373,8 @@ mod tests {
   fn test_eval_predicate_in_if() {
     // (if (_<_ 3 5) "yes" "no") = "yes"
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let condition = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::LessThan),
@@ -1351,8 +1403,8 @@ mod tests {
   fn test_eval_predicate_equals_different_types() {
     // (_=_ 5 "5") = false
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::BinaryPredicate(BinaryPredicate::Equals),
@@ -1370,8 +1422,8 @@ mod tests {
   fn test_eval_define() {
     // (def x 42)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::SpecialForm(SpecialForm::Define),
@@ -1395,8 +1447,8 @@ mod tests {
   fn test_eval_define_expression() {
     // (def x (_+_ 2 3))
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let add_expr = cons(
       LishpValue::BinaryOperator(BinaryOperator::Add),
@@ -1427,8 +1479,8 @@ mod tests {
   fn test_eval_set() {
     // (def x 10) (set! x 20)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Define x = 10
     let def_expr = cons(
@@ -1462,8 +1514,8 @@ mod tests {
   fn test_eval_set_undefined_variable() {
     // (set! x 20) - should fail because x is not defined
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let set_expr = cons(
       LishpValue::SpecialForm(SpecialForm::Set),
@@ -1482,8 +1534,8 @@ mod tests {
   fn test_eval_symbol_form() {
     // (symbol "x") = x
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let expr = cons(
       LishpValue::SpecialForm(SpecialForm::Symbol),
@@ -1498,8 +1550,8 @@ mod tests {
   fn test_eval_undefined_symbol() {
     // x - should fail because x is not defined
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let result = evaluator.eval(&LishpValue::Symbol { name: "x".into() });
     assert!(result.is_err());
@@ -1510,8 +1562,8 @@ mod tests {
   fn test_eval_variable_in_expression() {
     // (def x 5) (_+_ x 3) = 8
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Define x = 5
     let def_expr = cons(
@@ -1540,8 +1592,8 @@ mod tests {
   fn test_eval_lambda_simple() {
     // (lambda (x y) (_+_ x y)) вызванная с (2 3) = 5
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // (x y)
     let args = cons(
@@ -1583,8 +1635,8 @@ mod tests {
   fn test_eval_lambda_currying() {
     // ((lambda (x y) (_+_ x y)) 2)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // (x y)
     let args = cons(
@@ -1633,8 +1685,8 @@ mod tests {
   fn test_eval_lambda_currying_three_args() {
     // (lambda (x y z) (_+_ (_+_ x y) z)) with currying
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // (x y z)
     let args = cons(
@@ -1687,8 +1739,8 @@ mod tests {
     // (lambda (x . rest) rest) called with (1 2 3 4 5)
     // x = 1, rest = (2 3 4 5)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Arguments list: (x . rest)
     let args = cons(
@@ -1756,8 +1808,8 @@ mod tests {
     // (lambda (. rest) rest) with (1 2 3)
     // rest = (1 2 3)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Arguments list: (. rest)
     let args = cons(
@@ -1810,8 +1862,8 @@ mod tests {
     // (lambda (x . rest) (car rest)) with (10 20 30 40)
     // x = 10, rest = (20 30 40)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Arguments list: (x . rest)
     let args = cons(
@@ -1870,8 +1922,8 @@ mod tests {
     // (def factorial (lambda (n) (if (_>_ n 1) (_*_ n (factorial (_-_ n 1))) 1)))
     // (factorial 5) = 120
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Внутреннее условие: (_>_ n 1)
     let condition = cons(
@@ -1954,8 +2006,8 @@ mod tests {
   #[test]
   fn test_eval_dambda_dynamic_scope_vs_lambda_lexical() {
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Global x = 100
     let def_x_global = cons(
@@ -2064,8 +2116,8 @@ mod tests {
   #[test]
   fn test_eval_dambda_nested_dynamic_scope() {
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Global x = 1
     let def_x = cons(
@@ -2147,8 +2199,8 @@ mod tests {
   #[test]
   fn test_eval_dambda_no_partial_application() {
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // (dambda (x y) (_+_ x y))
     let args = cons(
@@ -2183,8 +2235,8 @@ mod tests {
   fn test_eval_dambda_simple() {
     // (dambda (x y) (_+_ x y)) called with (2 3) = 5
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     let args = cons(
       LishpValue::Symbol { name: "x".into() },
@@ -2223,8 +2275,8 @@ mod tests {
     // (dambda (x . rest) rest) with (1 2 3 4)
     // x = 1, rest = (2 3 4)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // Arguments list: (x . rest)
     let args = cons(
@@ -2289,8 +2341,8 @@ mod tests {
     // (add-10 100) should be 1100 (uses dynamic a = 1000)
     // (all-10 100) should be 110 (uses lexical a = 10)
     let mut io = MockIoAdapter::new(vec![]);
-    let mut env = Environment::new();
-    let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+    let env = Rc::new(RefCell::new(Environment::new()));
+    let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
     // (def a 1000)
     let def_a = cons(

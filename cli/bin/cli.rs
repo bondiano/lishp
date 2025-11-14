@@ -1,14 +1,24 @@
 use clap::Parser;
-use cli::{Cli, Commands, run_eval, run_file, run_files, run_repl};
+use cli::{run_eval, run_file, run_files, run_repl, Cli, Commands};
 use colored::*;
-use std::process;
+use std::{process, thread};
 
 fn main() {
   let cli = Cli::parse();
 
   let result = match cli.command {
-    Some(Commands::Repl) | None => run_repl(),
-    Some(Commands::Run { eval, files }) => match (eval, files.is_empty()) {
+    Some(Commands::Repl) | None => {
+      let builder = thread::Builder::new().stack_size(64 * 1024 * 1024); // 64 mb
+
+      let handler = builder
+        .spawn(run_repl)
+        .expect("Failed to spawn REPL thread");
+
+      handler
+        .join()
+        .map_err(|_| "Failed to join REPL thread".to_string())
+    }
+    Some(Commands::Run { eval, files }) => Ok(match (eval, files.is_empty()) {
       (Some(expr), _) => run_eval(&expr),
       (None, false) => {
         if files.len() == 1 {
@@ -24,7 +34,7 @@ fn main() {
         );
         process::exit(1);
       }
-    },
+    }),
   };
 
   if let Err(e) = result {

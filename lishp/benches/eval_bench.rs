@@ -1,6 +1,8 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use lishp::{Environment, Evaluator, StringIoAdapter, parser};
+use std::cell::RefCell;
 use std::hint::black_box;
+use std::rc::Rc;
 
 fn bench_factorial_eval(c: &mut Criterion) {
   let mut group = c.benchmark_group("factorial_eval");
@@ -24,8 +26,8 @@ res
         );
 
         let mut io = StringIoAdapter::output_only();
-        let mut env = Environment::new();
-        let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
         let mut remaining = program.as_str();
         let mut last_result = None;
@@ -64,8 +66,8 @@ fn bench_factorial_lambda(c: &mut Criterion) {
         );
 
         let mut io = StringIoAdapter::output_only();
-        let mut env = Environment::new();
-        let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+        let env = Rc::new(RefCell::new(Environment::new()));
+        let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
         let mut remaining = program.as_str();
         let mut last_result = None;
@@ -101,8 +103,8 @@ fn bench_lambda_overhead(c: &mut Criterion) {
 "#;
 
       let mut io = StringIoAdapter::output_only();
-      let mut env = Environment::new();
-      let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+      let env = Rc::new(RefCell::new(Environment::new()));
+      let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
       let mut remaining = program;
       while !remaining.is_empty() {
@@ -130,8 +132,8 @@ fn bench_lambda_overhead(c: &mut Criterion) {
 "#;
 
       let mut io = StringIoAdapter::output_only();
-      let mut env = Environment::new();
-      let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+      let env = Rc::new(RefCell::new(Environment::new()));
+      let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
       let mut remaining = program;
       let mut last_result = None;
@@ -159,8 +161,8 @@ fn bench_lambda_overhead(c: &mut Criterion) {
 "#;
 
       let mut io = StringIoAdapter::output_only();
-      let mut env = Environment::new();
-      let mut evaluator = Evaluator::with_environment(&mut io, &mut env);
+      let env = Rc::new(RefCell::new(Environment::new()));
+      let mut evaluator = Evaluator::with_environment(&mut io, env.clone());
 
       let mut remaining = program;
       let mut last_result = None;

@@ -1,4 +1,6 @@
 use lishp::{ParseError, StdioAdapter, parser};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Debug)]
 pub enum EvalError {
@@ -15,7 +17,7 @@ impl From<lishp::EvalError> for EvalError {
 pub fn process_input(
   input: &str,
   interactive_mode: bool,
-  env: &mut lishp::Environment,
+  env: Rc<RefCell<lishp::Environment>>,
 ) -> Result<String, EvalError> {
   let mut remaining = input;
   let mut last_result = None;
